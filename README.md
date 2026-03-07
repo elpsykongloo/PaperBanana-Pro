@@ -68,10 +68,33 @@ First download [PaperBananaBench](https://huggingface.co/datasets/dwzhu/PaperBan
     uv pip install -r requirements.txt
     ```
 
+### Step5 (Optional): Install as Global Command
+
+Install PaperBanana as a globally available CLI tool using `uv`:
+```bash
+uv tool install --editable .
+```
+
+After installation, you can launch PaperBanana from **anywhere** on your system:
+```bash
+paperbanana              # Launch the Streamlit GUI
+paperbanana gui          # Same as above
+paperbanana run [args]   # Run CLI batch processing
+paperbanana --help       # Show all available commands
+```
+
+> **Note**: If `uv tool update-shell` prompts you to update your PATH, run it once so that the `paperbanana` command is available system-wide. To uninstall, run `uv tool uninstall paperbanana`.
+
 ### Launch PaperBanana
 
+#### Global Command (Recommended)
+If you installed PaperBanana as a global tool (Step 5), simply run:
+```bash
+paperbanana
+```
+
 #### Interactive Demo (Streamlit)
-The easiest way to launch PaperBanana is via the interactive Streamlit demo:
+Alternatively, launch the Streamlit demo directly from the project directory:
 ```bash
 streamlit run demo.py
 ```

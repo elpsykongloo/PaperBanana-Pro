@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paperbanana"
+version = "0.1.0"
+description = "Reference-driven multi-agent framework for automated academic illustration generation"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "google-genai",
+    "streamlit",
+    "aiofiles",
+    "pillow",
+    "numpy",
+    "tqdm",
+    "json_repair",
+    "anthropic",
+    "openai",
+    "matplotlib",
+    "python-dotenv",
+    "pyyaml",
+    "google-auth",
+]
+
+[project.scripts]
+paperbanana = "cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "agents",
+    "prompts",
+    "providers",
+    "utils",
+    "visualize",
+    "style_guides",
+]
+# Include top-level modules needed at runtime
+include = [
+    "cli.py",
+    "demo.py",
+    "main.py",
+]
