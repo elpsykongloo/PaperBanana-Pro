@@ -84,6 +84,40 @@ def normalize_gemini_image_size(image_size: str, default_size: str = "1K") -> st
     return default_size
 
 
+def normalize_gemini_media_resolution(
+    image_size: str,
+    default_resolution: str = "MEDIA_RESOLUTION_MEDIUM",
+) -> str:
+    """
+    Map a coarse image size hint to the MediaResolution enum names used by
+    current google-genai releases.
+    """
+    normalized = normalize_gemini_image_size(
+        image_size,
+        default_size="2K" if default_resolution == "MEDIA_RESOLUTION_MEDIUM" else "1K",
+    )
+    mapping = {
+        "1K": "MEDIA_RESOLUTION_LOW",
+        "2K": "MEDIA_RESOLUTION_MEDIUM",
+        "4K": "MEDIA_RESOLUTION_HIGH",
+    }
+    return mapping.get(normalized, default_resolution)
+
+
+def build_gemini_image_prompt(prompt_text: str, aspect_ratio: str, image_size: str) -> str:
+    """
+    Append rendering hints directly into the prompt for SDK versions that no
+    longer expose ImageConfig.
+    """
+    return (
+        f"{prompt_text}\n\n"
+        "Additional rendering requirements:\n"
+        f"- Aspect ratio: {aspect_ratio}\n"
+        f"- Output resolution preference: {normalize_gemini_image_size(image_size, default_size='2K')}\n"
+        "- Return only the rendered image.\n"
+    )
+
+
 def convert_png_b64_to_jpg_b64(png_b64_str: str) -> str:
     """
     Convert a PNG base64 string to a JPG base64 string.

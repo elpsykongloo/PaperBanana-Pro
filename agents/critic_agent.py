@@ -23,6 +23,7 @@ from PIL import Image
 import json_repair
 
 from utils import generation_utils
+from utils.pipeline_state import PipelineState
 from .base_agent import BaseAgent
 
 from utils.log_config import get_logger
@@ -54,34 +55,18 @@ class CriticAgent(BaseAgent):
 
     async def process(self, data: Dict[str, Any], source: str = "stylist") -> Dict[str, Any]:
         cfg = self.task_config
-        task_name = cfg["task_name"]
-
-        round_idx = data.get("current_critic_round", 0)
+        state = PipelineState(data, cfg["task_name"])
+        task_name = state.task_name
+        round_idx = state.current_critic_round
         candidate_id = data.get("candidate_id", "N/A")
         logger.debug(f"🔍 开始处理, round={round_idx}, source={source}, provider={self.exp_config.provider}")
 
-        if round_idx == 0:
-            if source == "stylist":
-                desc_key = f"target_{task_name}_stylist_desc0"
-                base64_key = f"target_{task_name}_stylist_desc0_base64_jpg"
-                mime_key = f"target_{task_name}_stylist_desc0_mime_type"
-            elif source == "planner":
-                desc_key = f"target_{task_name}_desc0"
-                base64_key = f"target_{task_name}_desc0_base64_jpg"
-                mime_key = f"target_{task_name}_desc0_mime_type"
-            else:
-                raise ValueError(f"Invalid source '{source}'. Must be 'stylist' or 'planner'.")
-
-            detailed_description = data[desc_key]
-            image_base64 = data.get(base64_key)
-            image_mime = data.get(mime_key, "image/jpeg")
-        else:
-            desc_key = f"target_{task_name}_critic_desc{round_idx - 1}"
-            base64_key = f"target_{task_name}_critic_desc{round_idx - 1}_base64_jpg"
-            mime_key = f"target_{task_name}_critic_desc{round_idx - 1}_mime_type"
-            detailed_description = data[desc_key]
-            image_base64 = data.get(base64_key)
-            image_mime = data.get(mime_key, "image/jpeg")
+        desc_key = state.current_desc_key_for_critic(source, round_idx)
+        base64_key = state.image_key(desc_key)
+        mime_key = state.mime_key(desc_key)
+        detailed_description = data[desc_key]
+        image_base64 = data.get(base64_key)
+        image_mime = data.get(mime_key, "image/jpeg")
 
         content = data["content"]
         if isinstance(content, (dict, list)):
@@ -100,9 +85,29 @@ class CriticAgent(BaseAgent):
             })
         else:
             logger.warning(f"⚠️  第 {round_idx} 轮无有效图像，使用纯文本评审模式")
+            system_notice = (
+                "\n[SYSTEM NOTICE] The plot image could not be generated based on the current "
+                "description (likely due to invalid code). Please check the description for "
+                "errors (e.g., syntax issues, missing data) and provide a revised version."
+            )
+            if task_name == "plot":
+                plot_exec = data.get(state.plot_exec_key(desc_key), {})
+                if isinstance(plot_exec, dict):
+                    exception_text = str(plot_exec.get("exception") or "").strip()
+                    stderr_text = str(plot_exec.get("stderr") or "").strip()
+                    stdout_text = str(plot_exec.get("stdout") or "").strip()
+                    diagnostic_lines = []
+                    if exception_text:
+                        diagnostic_lines.append(f"Exception: {exception_text}")
+                    if stderr_text:
+                        diagnostic_lines.append(f"stderr: {stderr_text[:500]}")
+                    if stdout_text:
+                        diagnostic_lines.append(f"stdout: {stdout_text[:500]}")
+                    if diagnostic_lines:
+                        system_notice += "\nExecution diagnostics:\n- " + "\n- ".join(diagnostic_lines)
             content_list.append({
                 "type": "text",
-                "text": "\n[SYSTEM NOTICE] The plot image could not be generated based on the current description (likely due to invalid code). Please check the description for errors (e.g., syntax issues, missing data) and provide a revised version."
+                "text": system_notice,
             })
 
         content_list.append({
@@ -117,28 +122,51 @@ class CriticAgent(BaseAgent):
             error_context=f"critic[candidate={candidate_id},round={round_idx}]",
         )
 
+        status_key = state.critic_status_key(round_idx)
+        raw_response_key = state.critic_raw_response_key(round_idx)
         cleaned_response = (
             response_list[0].replace("```json", "").replace("```", "").strip()
         )
+        data[raw_response_key] = cleaned_response
+        parse_failed = False
         try:
             eval_result = json_repair.loads(cleaned_response)
             if not isinstance(eval_result, dict):
                 eval_result = {}
+                parse_failed = True
         except Exception as e:
             eval_result = {}
+            parse_failed = True
             import traceback
             logger.warning(f"⚠️  解析 JSON 响应失败: {e}")
             logger.debug(f"   Traceback: {traceback.format_exc()}")
             logger.debug(f"   原始响应（前500字）: {cleaned_response[:500]}")
 
-        critic_suggestions = eval_result.get("critic_suggestions", "No changes needed.")
-        revised_description = eval_result.get("revised_description", "No changes needed.")
+        if not parse_failed and (
+            "critic_suggestions" not in eval_result
+            or "revised_description" not in eval_result
+        ):
+            parse_failed = True
 
-        data[f"target_{task_name}_critic_suggestions{round_idx}"] = critic_suggestions
-        data[f"target_{task_name}_critic_desc{round_idx}"] = revised_description
+        if parse_failed:
+            critic_suggestions = (
+                "Critic response parse failed. Keep the previous description and stop this "
+                "round so the caller can surface the issue."
+            )
+            revised_description = detailed_description
+            data[status_key] = "parse_error"
+        else:
+            critic_suggestions = eval_result.get("critic_suggestions", "No changes needed.")
+            revised_description = eval_result.get("revised_description", "No changes needed.")
+            data[status_key] = "ok"
 
-        if revised_description.strip() == "No changes needed.":
-            data[f"target_{task_name}_critic_desc{round_idx}"] = detailed_description
+        data[state.critic_suggestions_key(round_idx)] = critic_suggestions
+        data[state.critic_desc_key(round_idx)] = revised_description
+
+        if parse_failed:
+            logger.warning(f"⚠️  round={round_idx}: Critic 响应解析失败，保留上一版描述")
+        elif revised_description.strip() == "No changes needed.":
+            data[state.critic_desc_key(round_idx)] = detailed_description
             logger.info(f"✅ round={round_idx}: 无需修改")
         else:
             logger.info(f"📝 round={round_idx}: 建议长度={len(critic_suggestions)}, 修订描述长度={len(revised_description)}")

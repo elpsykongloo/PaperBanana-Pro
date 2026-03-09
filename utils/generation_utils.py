@@ -28,26 +28,17 @@ from typing import List, Dict, Any, Callable, Optional, Tuple
 from PIL import Image
 
 import os
-import yaml
 from pathlib import Path
 
+from utils.config_loader import load_model_config, get_config_val
 from utils.log_config import get_logger
 
 logger = get_logger("GenerationUtils")
 
 # ==================== 配置加载 ====================
 
-config_path = Path(__file__).parent.parent / "configs" / "model_config.yaml"
-model_config = {}
-if config_path.exists():
-    with open(config_path, "r", encoding="utf-8") as f:
-        model_config = yaml.safe_load(f) or {}
-
-def get_config_val(section, key, env_var, default=""):
-    val = os.getenv(env_var)
-    if not val and section in model_config:
-        val = model_config[section].get(key)
-    return val or default
+REPO_ROOT = Path(__file__).parent.parent
+model_config = load_model_config(REPO_ROOT)
 
 
 # ==================== 运行时状态回调（用于 UI 实时反馈） ====================
@@ -100,8 +91,22 @@ def _emit_runtime_status(message: str) -> None:
 
 evolink_provider = None
 
-evolink_api_key = get_config_val("evolink", "api_key", "EVOLINK_API_KEY", "")
-evolink_base_url = get_config_val("evolink", "base_url", "EVOLINK_BASE_URL", "https://api.evolink.ai")
+evolink_api_key = get_config_val(
+    model_config,
+    "evolink",
+    "api_key",
+    "EVOLINK_API_KEY",
+    "",
+    base_dir=REPO_ROOT,
+)
+evolink_base_url = get_config_val(
+    model_config,
+    "evolink",
+    "base_url",
+    "EVOLINK_BASE_URL",
+    "https://api.evolink.ai",
+    base_dir=REPO_ROOT,
+)
 
 if evolink_api_key:
     try:
@@ -111,7 +116,7 @@ if evolink_api_key:
     except ImportError:
         logger.warning("⚠️  未安装 providers.evolink，Evolink Provider 不可用")
 else:
-    logger.warning("⚠️  未配置 Evolink API Key，Evolink Provider 不可用")
+    logger.debug("未配置 Evolink API Key；仅当选择 evolink provider 时才会影响运行。")
 
 
 def _cleanup_evolink_provider():
@@ -163,7 +168,14 @@ gemini_client = None
 anthropic_client = None
 openai_client = None
 
-api_key = get_config_val("api_keys", "google_api_key", "GOOGLE_API_KEY", "")
+api_key = get_config_val(
+    model_config,
+    "api_keys",
+    "google_api_key",
+    "GOOGLE_API_KEY",
+    "",
+    base_dir=REPO_ROOT,
+)
 if api_key:
     try:
         from google import genai
@@ -173,7 +185,14 @@ if api_key:
     except ImportError:
         logger.warning("⚠️  未安装 google-genai，Gemini Client 不可用")
 
-anthropic_api_key = get_config_val("api_keys", "anthropic_api_key", "ANTHROPIC_API_KEY", "")
+anthropic_api_key = get_config_val(
+    model_config,
+    "api_keys",
+    "anthropic_api_key",
+    "ANTHROPIC_API_KEY",
+    "",
+    base_dir=REPO_ROOT,
+)
 if anthropic_api_key:
     try:
         from anthropic import AsyncAnthropic
@@ -182,7 +201,14 @@ if anthropic_api_key:
     except ImportError:
         logger.warning("⚠️  未安装 anthropic，Anthropic Client 不可用")
 
-openai_api_key = get_config_val("api_keys", "openai_api_key", "OPENAI_API_KEY", "")
+openai_api_key = get_config_val(
+    model_config,
+    "api_keys",
+    "openai_api_key",
+    "OPENAI_API_KEY",
+    "",
+    base_dir=REPO_ROOT,
+)
 if openai_api_key:
     try:
         from openai import AsyncOpenAI

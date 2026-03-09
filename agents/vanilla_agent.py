@@ -22,10 +22,10 @@ from typing import Dict, Any
 import base64, io, asyncio
 from PIL import Image
 import json
-from functools import partial
 
-from utils import generation_utils, image_utils
-from utils.plot_executor import execute_plot_code
+from utils import image_utils
+from utils.pipeline_state import get_render_options
+from utils.plot_executor import execute_plot_code_with_details
 from .base_agent import BaseAgent
 
 
@@ -66,6 +66,11 @@ class VanillaAgent(BaseAgent):
 
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         cfg = self.task_config
+        render_options = get_render_options(
+            data,
+            default_aspect_ratio="1:1",
+            default_image_resolution="1K",
+        )
 
         raw_content = data["content"]
         content = json.dumps(raw_content) if isinstance(raw_content, (dict, list)) else raw_content
@@ -82,73 +87,22 @@ class VanillaAgent(BaseAgent):
 
         content_list = [{"type": "text", "text": prompt_text}]
 
-        # 根据 provider 路由 API 调用
-        if self.exp_config.provider == "evolink":
-            if cfg["use_image_generation"]:
-                aspect_ratio = data.get("additional_info", {}).get("rounded_ratio", "1:1")
-                response_list = await generation_utils.call_evolink_image_with_retry_async(
-                    model_name=self.model_name,
-                    prompt=prompt_text,
-                    config={
-                        "aspect_ratio": aspect_ratio,
-                        "quality": "2K",
-                    },
-                    max_attempts=5,
-                    retry_delay=30,
-                )
-            else:
-                response_list = await generation_utils.call_evolink_text_with_retry_async(
-                    model_name=self.model_name,
-                    contents=content_list,
-                    config={
-                        "system_prompt": self.system_prompt,
-                        "temperature": self.exp_config.temperature,
-                        "max_output_tokens": 50000,
-                    },
-                    max_attempts=5,
-                    retry_delay=30,
-                )
-        elif "gemini" in self.model_name:
-            from google.genai import types
-            gen_config_args = {
-                "system_instruction": self.system_prompt,
-                "temperature": self.exp_config.temperature,
-                "candidate_count": 1,
-                "max_output_tokens": 50000,
-            }
-            if cfg["use_image_generation"]:
-                gemini_image_size = image_utils.normalize_gemini_image_size(
-                    data.get("additional_info", {}).get("image_resolution", "1K"),
-                    default_size="1K",
-                )
-                gen_config_args["response_modalities"] = ["IMAGE"]
-                gen_config_args["image_config"] = types.ImageConfig(
-                    aspect_ratio=data["additional_info"]["rounded_ratio"],
-                    image_size=gemini_image_size,
-                )
-            response_list = await generation_utils.call_gemini_with_retry_async(
-                model_name=self.model_name,
+        if cfg["use_image_generation"]:
+            response_list = await self.call_image_api(
+                prompt=prompt_text,
                 contents=content_list,
-                config=types.GenerateContentConfig(**gen_config_args),
-                max_attempts=5,
-                retry_delay=30,
-            )
-        elif "gpt-image" in self.model_name:
-            image_config = {
-                "size": "1536x1024",
-                "quality": "high",
-                "background": "opaque",
-                "output_format": "png",
-            }
-            response_list = await generation_utils.call_openai_image_generation_with_retry_async(
-                model_name=self.model_name,
-                prompt=prompt_text[:30000],
-                config=image_config,
+                aspect_ratio=render_options.aspect_ratio,
+                image_resolution=render_options.image_resolution,
                 max_attempts=5,
                 retry_delay=30,
             )
         else:
-            raise ValueError(f"Unsupported model: {self.model_name}")
+            response_list = await self.call_text_api(
+                contents=content_list,
+                max_output_tokens=50000,
+                max_attempts=5,
+                retry_delay=30,
+            )
 
         output_key = f"vanilla_{cfg['task_name']}_base64_jpg"
         mime_key = f"vanilla_{cfg['task_name']}_mime_type"
@@ -161,9 +115,15 @@ class VanillaAgent(BaseAgent):
             if response_list and response_list[0]:
                 raw_code = response_list[0]
                 loop = asyncio.get_running_loop()
-                base64_jpg = await loop.run_in_executor(
-                    self.process_executor, partial(execute_plot_code, dpi=100), raw_code
+                exec_result = await loop.run_in_executor(
+                    self.process_executor,
+                    execute_plot_code_with_details,
+                    raw_code,
+                    100,
                 )
+                base64_jpg = exec_result.get("base64_jpg")
+                data["vanilla_plot_code"] = raw_code
+                data["vanilla_plot_exec"] = exec_result
                 if base64_jpg:
                     data[output_key] = base64_jpg
                     data[mime_key] = "image/jpeg"

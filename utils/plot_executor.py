@@ -12,35 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-绘图代码执行器 — 在子进程中安全执行 matplotlib 代码并返回 base64 图片。
-"""
+"""绘图代码执行器。"""
 
 import base64
 import io
+import contextlib
 import re
 import logging
+from typing import Any
+from io import StringIO
 
 import matplotlib.pyplot as plt
 
 logger = logging.getLogger("PlotExecutor")
 
 
-def execute_plot_code(code_text: str, dpi: int = 300) -> str | None:
+def execute_plot_code_with_details(code_text: str, dpi: int = 300) -> dict[str, Any]:
     """
-    在独立进程中执行绘图代码并返回 JPEG base64 字符串。
+    在独立进程中执行绘图代码并返回结构化结果。
 
-    步骤：
-    1. 从 markdown 代码块中提取 Python 代码
-    2. 执行绘图
-    3. 以 JPEG 格式返回 base64 编码的图片
-
-    Args:
-        code_text: 包含 matplotlib 绘图代码的文本（可含 ```python 标记）
-        dpi: 输出图像的 DPI，默认 300
-
-    Returns:
-        base64 编码的 JPEG 图片字符串，失败时返回 None
+    返回字段：
+    - success: 是否成功渲染
+    - base64_jpg: 成功时的 JPEG base64
+    - stdout / stderr: 代码执行输出
+    - exception: 异常文本
+    - figure_detected: 是否创建了 matplotlib figure
     """
     match = re.search(r"```python(.*?)```", code_text, re.DOTALL)
     code_clean = match.group(1).strip() if match else code_text.strip()
@@ -48,10 +44,13 @@ def execute_plot_code(code_text: str, dpi: int = 300) -> str | None:
     plt.switch_backend("Agg")
     plt.close("all")
     plt.rcdefaults()
+    stdout_buffer = StringIO()
+    stderr_buffer = StringIO()
 
     try:
         exec_globals = {}
-        exec(code_clean, exec_globals)
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            exec(code_clean, exec_globals)
 
         if plt.get_fignums():
             buf = io.BytesIO()
@@ -60,10 +59,39 @@ def execute_plot_code(code_text: str, dpi: int = 300) -> str | None:
 
             buf.seek(0)
             img_bytes = buf.read()
-            return base64.b64encode(img_bytes).decode("utf-8")
-        else:
-            return None
+            return {
+                "success": True,
+                "base64_jpg": base64.b64encode(img_bytes).decode("utf-8"),
+                "stdout": stdout_buffer.getvalue(),
+                "stderr": stderr_buffer.getvalue(),
+                "exception": None,
+                "figure_detected": True,
+            }
+
+        return {
+            "success": False,
+            "base64_jpg": None,
+            "stdout": stdout_buffer.getvalue(),
+            "stderr": stderr_buffer.getvalue(),
+            "exception": None,
+            "figure_detected": False,
+        }
 
     except Exception as e:
         logger.error(f"❌ 执行绘图代码出错: {e}")
-        return None
+        return {
+            "success": False,
+            "base64_jpg": None,
+            "stdout": stdout_buffer.getvalue(),
+            "stderr": stderr_buffer.getvalue(),
+            "exception": f"{type(e).__name__}: {e}",
+            "figure_detected": False,
+        }
+    finally:
+        plt.close("all")
+
+
+def execute_plot_code(code_text: str, dpi: int = 300) -> str | None:
+    """兼容旧调用：仅返回 base64 图片。"""
+    result = execute_plot_code_with_details(code_text, dpi=dpi)
+    return result.get("base64_jpg")

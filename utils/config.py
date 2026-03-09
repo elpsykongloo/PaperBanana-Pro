@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Configuration for experiments
-"""
+"""Configuration for experiments."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+
+from utils.runtime_settings import RuntimeSettings, resolve_runtime_settings
 
 try:
     from zoneinfo import ZoneInfo
@@ -36,7 +36,7 @@ class ExpConfig:
     split_name: str = "test"
     temperature: float = 1.0
     exp_mode: str = ""
-    retrieval_setting: Literal["auto", "manual", "random", "none"] = "auto"
+    retrieval_setting: Literal["auto", "auto-full", "manual", "random", "none"] = "auto"
     max_critic_rounds: int = 3
     concurrency_mode: Literal["auto", "manual"] = "auto"
     max_concurrent: int = 20
@@ -47,19 +47,24 @@ class ExpConfig:
     timezone: str = "America/Los_Angeles"
 
     timestamp: str | None = None
+    runtime_settings: RuntimeSettings = field(init=False)
 
     def __post_init__(self):
-        # Fallback to yaml config if no model_name provided
-        if not self.model_name or not self.image_model_name:
-            import yaml
-            config_path = self.work_dir / "configs" / "model_config.yaml"
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    model_config_data = yaml.safe_load(f) or {}
-                    if not self.model_name:
-                        self.model_name = model_config_data.get("defaults", {}).get("model_name", "")
-                    if not self.image_model_name:
-                        self.image_model_name = model_config_data.get("defaults", {}).get("image_model_name", "")
+        self.runtime_settings = resolve_runtime_settings(
+            self.provider,
+            model_name=self.model_name,
+            image_model_name=self.image_model_name,
+            concurrency_mode=self.concurrency_mode,
+            max_concurrent=self.max_concurrent,
+            max_critic_rounds=self.max_critic_rounds,
+            base_dir=self.work_dir,
+        )
+        self.provider = self.runtime_settings.provider
+        self.model_name = self.runtime_settings.model_name
+        self.image_model_name = self.runtime_settings.image_model_name
+        self.concurrency_mode = self.runtime_settings.concurrency_mode
+        self.max_concurrent = self.runtime_settings.max_concurrent
+        self.max_critic_rounds = self.runtime_settings.max_critic_rounds
 
         if self.timestamp is None:
             tz = ZoneInfo(self.timezone)

@@ -18,16 +18,24 @@ Polish Agent - 根据风格指南优化基准图像。
 
 import base64
 import io
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Any
 from PIL import Image
 
 from utils import generation_utils, image_utils
+from utils.pipeline_state import get_render_options
 from .base_agent import BaseAgent
 
 from utils.log_config import get_logger
 
 logger = get_logger("PolishAgent")
+
+
+@lru_cache(maxsize=8)
+def _load_style_guide_text(style_guide_path: str) -> str:
+    with open(style_guide_path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def _load_image_as_base64(image_path: str) -> tuple[str | None, str | None]:
@@ -54,12 +62,14 @@ class PolishAgent(BaseAgent):
         if self.exp_config.task_name == "plot":
             self.style_guide_filename = "neurips2025_plot_style_guide.md"
             self.suggestion_system_prompt = PLOT_SUGGESTION_SYSTEM_PROMPT
+            self.system_prompt = PLOT_POLISH_AGENT_SYSTEM_PROMPT
             self.task_config = {
                 "task_name": "plot",
             }
         else:
             self.style_guide_filename = "neurips2025_diagram_style_guide.md"
             self.suggestion_system_prompt = DIAGRAM_SUGGESTION_SYSTEM_PROMPT
+            self.system_prompt = DIAGRAM_POLISH_AGENT_SYSTEM_PROMPT
             self.task_config = {
                 "task_name": "diagram",
             }
@@ -115,18 +125,22 @@ class PolishAgent(BaseAgent):
 
         style_guide_path = self.exp_config.work_dir / "style_guides" / self.style_guide_filename
         try:
-            with open(style_guide_path, "r", encoding="utf-8") as f:
-                style_guide = f.read()
+            style_guide = _load_style_guide_text(str(style_guide_path))
         except Exception as e:
             logger.error(f"❌ 加载风格指南失败 {style_guide_path}: {e}")
             return data
 
         logger.info(f"🎨 [第1步] 为 {task_name} 生成建议...")
         suggestions = await self._generate_suggestions(gt_image_b64, gt_image_mime, style_guide)
+        output_key = f"polished_{task_name}_base64_jpg"
+        output_mime_key = f"polished_{task_name}_mime_type"
 
         if not suggestions or "No changes needed" in suggestions:
             logger.info("✨ 该图像无需修改")
-            pass
+            data[f"suggestions_{task_name}"] = suggestions or "No changes needed"
+            data[output_key] = gt_image_b64
+            data[output_mime_key] = gt_image_mime
+            return data
 
         if suggestions:
             data[f"suggestions_{task_name}"] = suggestions
@@ -159,12 +173,17 @@ class PolishAgent(BaseAgent):
                 )
                 image_urls = [ref_image_url]
 
+            render_options = get_render_options(
+                data,
+                default_aspect_ratio="16:9",
+                default_image_resolution="2K",
+            )
             response_list = await self.call_image_api(
                 prompt=user_prompt,
                 model_name=self.image_model_name,
                 contents=content_list,
-                aspect_ratio=data.get("additional_info", {}).get("rounded_ratio", "16:9"),
-                image_resolution=data.get("additional_info", {}).get("image_resolution", "2K"),
+                aspect_ratio=render_options.aspect_ratio,
+                image_resolution=render_options.image_resolution,
                 image_urls=image_urls,
                 max_attempts=5,
                 retry_delay=30,
@@ -172,8 +191,6 @@ class PolishAgent(BaseAgent):
 
             if response_list and response_list[0]:
                 raw_image_b64 = response_list[0]
-                output_key = f"polished_{task_name}_base64_jpg"
-                output_mime_key = f"polished_{task_name}_mime_type"
                 data[output_key] = raw_image_b64
                 data[output_mime_key] = image_utils.detect_image_mime_from_b64(raw_image_b64)
             else:

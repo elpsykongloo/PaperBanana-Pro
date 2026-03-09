@@ -22,28 +22,24 @@ import sys
 import asyncio
 import importlib
 import re
+from pathlib import Path
 
 # Ensure local imports work
 sys.path.append(os.getcwd())
+
+from utils.pipeline_state import (
+    detect_task_type_from_result,
+    find_final_stage_keys,
+    get_available_critic_rounds,
+)
+from utils.result_paths import resolve_gt_image_path
 
 st.set_page_config(layout="wide", page_title="PaperBanana Referenced Eval Visualizer", page_icon="🍌")
 
 
 def detect_task_type(data):
     """Detect whether data is for diagram or plot task."""
-    if not data:
-        return "diagram"
-    
-    sample = data[0]
-    # Check for plot-specific fields
-    if "content" in sample and isinstance(sample.get("content"), dict):
-        return "plot"
-    # Check for diagram-specific fields
-    # Now directly accessible from top level
-        return "diagram"
-    
-    # Default to diagram
-    return "diagram"
+    return detect_task_type_from_result(data)
 
 @st.cache_data
 def load_data(path):
@@ -111,6 +107,15 @@ def load_local_image(path):
     if path and os.path.exists(path):
         return Image.open(path)
     return None
+def get_latest_critic_keys(item, task_type):
+    rounds = get_available_critic_rounds(item, task_type)
+    if not rounds:
+        return None, None
+    final_round = rounds[-1]
+    return (
+        f"target_{task_type}_critic_desc{final_round}_base64_jpg",
+        f"target_{task_type}_critic_desc{final_round}",
+    )
 
 def display_outcome(outcome):
     if outcome == "Model":
@@ -157,33 +162,24 @@ def format_reasoning(text):
 async def run_eval_on_sample(sample, task_name="diagram"):
     """Hot-reload prompts and run eval."""
     import prompts.diagram_eval_prompts
-    import prompts.plots_eval_prompts
+    import prompts.plot_eval_prompts
     import utils.eval_toolkits
     
     importlib.reload(prompts.diagram_eval_prompts)
-    importlib.reload(prompts.plots_eval_prompts)
+    importlib.reload(prompts.plot_eval_prompts)
     importlib.reload(utils.eval_toolkits)
     from utils.eval_toolkits import get_score_for_image_referenced
     
     # Ensure eval_image_field is set
     if "eval_image_field" not in sample:
-        # Try to infer from available fields or use default
-        if task_name == "plot":
-            if "target_plot_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_plot_desc0_base64_jpg"
-            elif "target_plot_stylist_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_plot_stylist_desc0_base64_jpg"
-        else:
-            if "target_diagram_critic_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_diagram_critic_desc0_base64_jpg"
-            elif "target_diagram_stylist_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_diagram_stylist_desc0_base64_jpg"
-            elif "target_diagram_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_diagram_desc0_base64_jpg"
-            else:
-                sample["eval_image_field"] = "vanilla_image_base64"  # fallback
+        inferred_eval_key, _ = find_final_stage_keys(sample, task_name, "demo_planner_critic")
+        sample["eval_image_field"] = inferred_eval_key or "vanilla_image_base64"
     
-    return await get_score_for_image_referenced(sample, task_name=task_name)
+    return await get_score_for_image_referenced(
+        sample,
+        task_name=task_name,
+        work_dir=Path(os.getcwd()),
+    )
 
 def main():
     st.sidebar.title("🍌 PaperBanana Referenced Eval")
@@ -254,7 +250,7 @@ def main():
         mode_to_keys = {
             "Vanilla": ("target_diagram_desc0_base64_jpg", "target_diagram_desc0"),
             "Stylist": ("target_diagram_stylist_desc0_base64_jpg", "target_diagram_stylist_desc0"),
-            "Critic": ("target_diagram_critic_desc0_base64_jpg", "target_diagram_critic_desc0"),
+            "Critic": (None, None),
         }
     
     # --- Search Functionality ---
@@ -355,20 +351,17 @@ def main():
             
             # --- Determine Image and Text for Model ---
             if display_mode == "Auto":
-                eval_field = item.get("eval_image_field")
-                if eval_field:
-                    model_b64_key = eval_field
-                    model_text_key = eval_field.replace("_base64_jpg", "")
-                else:
-                    # Fallback
-                    if task_type == "plot":
-                        model_b64_key = "target_plot_desc0_base64_jpg"
-                        model_text_key = "target_plot_desc0"
-                    else:
-                        model_b64_key = "target_diagram_critic_desc0_base64_jpg"
-                        model_text_key = "target_diagram_critic_desc0"
+                model_b64_key, model_text_key = find_final_stage_keys(
+                    item,
+                    task_type,
+                    st.session_state.get("exp_mode", "demo_planner_critic"),
+                )
             else:
                 model_b64_key, model_text_key = mode_to_keys[display_mode]
+                if display_mode == "Critic":
+                    latest_b64_key, latest_text_key = get_latest_critic_keys(item, task_type)
+                    model_b64_key = latest_b64_key or "target_diagram_desc0_base64_jpg"
+                    model_text_key = latest_text_key or "target_diagram_desc0"
 
             model_b64 = item.get(model_b64_key)
             model_description = item.get(model_text_key, "N/A")
@@ -411,11 +404,17 @@ def main():
                 else:
                     gt_path = item.get("path_to_gt_image")
                 
-                gt_img = load_local_image(gt_path)
+                resolved_gt_path = resolve_gt_image_path(
+                    gt_path,
+                    task_type,
+                    file_path,
+                    work_dir=os.getcwd(),
+                )
+                gt_img = load_local_image(str(resolved_gt_path) if resolved_gt_path else None)
                 if gt_img:
                     st.image(gt_img, use_container_width=True)
                 else:
-                    st.error(f"Human image not found at: {gt_path}")
+                    st.error(f"Human image not found at: {resolved_gt_path}")
                 
                 with st.expander("📄 Human/Caption Info", expanded=False):
                     st.markdown(f"**Caption/Description:** {caption_or_desc}")

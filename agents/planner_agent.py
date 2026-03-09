@@ -16,17 +16,42 @@
 Planner Agent - 根据方法章节生成图表的详细描述。
 """
 
+from functools import lru_cache
 import json
+from pathlib import Path
 from typing import Dict, Any
 import base64, io, asyncio
 from PIL import Image
 
 from utils import generation_utils
+from utils.pipeline_state import PipelineState
 from .base_agent import BaseAgent
 
 from utils.log_config import get_logger
 
 logger = get_logger("PlannerAgent")
+
+
+@lru_cache(maxsize=8)
+def _load_reference_items(work_dir: str, task_name: str) -> dict[str, dict[str, Any]]:
+    ref_file = (
+        Path(work_dir)
+        / "data"
+        / "PaperBananaBench"
+        / task_name
+        / "ref.json"
+    )
+    if not ref_file.exists():
+        return {}
+    with open(ref_file, "r", encoding="utf-8") as f:
+        candidate_pool = json.load(f)
+    return {item["id"]: item for item in candidate_pool}
+
+
+@lru_cache(maxsize=1024)
+def _load_reference_image_base64(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
 
 
 class PlannerAgent(BaseAgent):
@@ -54,6 +79,7 @@ class PlannerAgent(BaseAgent):
 
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         cfg = self.task_config
+        state = PipelineState(data, cfg["task_name"])
         logger.debug(f"📝 开始处理, task={cfg['task_name']}, provider={self.exp_config.provider}, model={self.model_name}")
         candidate_id = data.get("candidate_id", "N/A")
 
@@ -66,12 +92,8 @@ class PlannerAgent(BaseAgent):
         examples = data.get("retrieved_examples", [])
         if not examples:
             retrieved_ids = data.get("top10_references", [])
-            ref_file = self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json"
-            if ref_file.exists():
-                with open(ref_file, "r", encoding="utf-8") as f:
-                    candidate_pool = json.load(f)
-                id_to_item = {item["id"]: item for item in candidate_pool}
-                examples = [id_to_item[ref_id] for ref_id in retrieved_ids if ref_id in id_to_item]
+            id_to_item = _load_reference_items(str(self.exp_config.work_dir), cfg["task_name"])
+            examples = [id_to_item[ref_id] for ref_id in retrieved_ids if ref_id in id_to_item]
 
         user_prompt = ""
         for idx, item in enumerate(examples):
@@ -86,8 +108,7 @@ class PlannerAgent(BaseAgent):
             content_list.append({"type": "text", "text": user_prompt})
 
             image_path = self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}" / item["path_to_gt_image"]
-            with open(image_path, "rb") as f:
-                ref_image_base64 = base64.b64encode(f.read()).decode("utf-8")
+            ref_image_base64 = _load_reference_image_base64(str(image_path))
             content_list.append({"type": "image", "image_base64": ref_image_base64})
             user_prompt = ""
 
@@ -109,7 +130,10 @@ class PlannerAgent(BaseAgent):
         )
 
         for idx, response in enumerate(response_list):
-            data[f"target_{cfg['task_name']}_desc{idx}"] = response.strip()
+            if idx == 0:
+                data[state.planner_desc_key()] = response.strip()
+            else:
+                data[f"target_{cfg['task_name']}_desc{idx}"] = response.strip()
 
         logger.info(f"✅ 完成, 生成 {len(response_list)} 个描述, desc0 长度={len(response_list[0]) if response_list else 0}")
         return data

@@ -40,9 +40,22 @@ cd PaperBanana
 ```
 
 ### Step2: Configuration
-PaperBanana supports configuring API keys from a YAML configuration file or via environment variables. 
+PaperBanana supports configuring API keys from environment variables, local secret text files, or a YAML configuration file.
 
-We recommend duplicate the `configs/model_config.template.yaml` file into `configs/model_config.yaml` to externalize all user configurations. This file is ignored by git to keep your api keys and configurations secret. In `model_config.yaml`, remember to fill in the two model names (`defaults.model_name` and `defaults.image_model_name`) and set at least one API key under `api_keys` (e.g. `google_api_key` for Gemini models).
+We recommend duplicate the `configs/model_config.template.yaml` file into `configs/model_config.yaml` to externalize user configuration, and store local secrets under `configs/local/`. Both locations are ignored by git. The runtime lookup order is:
+
+1. Environment variables
+2. `configs/local/*.txt`
+3. `configs/model_config.yaml`
+
+For example:
+
+- `configs/local/google_api_key.txt`
+- `configs/local/openai_api_key.txt`
+- `configs/local/anthropic_api_key.txt`
+- `configs/local/evolink_api_key.txt`
+
+In `model_config.yaml`, set the model defaults for the provider you use most often. Gemini uses `defaults.model_name` and `defaults.image_model_name`; Evolink uses `evolink.model_name` and `evolink.image_model_name`.
 
 Note that if you need to generate many candidates simultaneously, you will require an API key that supports high concurrency.
 
@@ -65,7 +78,10 @@ First download [PaperBananaBench](https://huggingface.co/datasets/dwzhu/PaperBan
 
 4. Install required packages
     ```bash
-    uv pip install -r requirements.txt
+uv pip install -r requirements.txt
+
+# Equivalent single-source install (dependencies come from pyproject.toml)
+uv pip install -e .
     ```
 
 ### Step5 (Optional): Install as Global Command
@@ -102,10 +118,13 @@ streamlit run demo.py
 The web interface provides two main workflows:
 
 **1. Generate Candidates Tab**:
-- Paste your method section content (Markdown recommended) and provide the figure caption.
-- Configure settings (pipeline mode, retrieval setting, number of candidates, aspect ratio, critic rounds).
+- Switch between `diagram` and `plot` tasks in the same UI.
+- `diagram`: paste your method section content and provide the figure caption.
+- `plot`: paste raw data and describe the desired visualization intent.
+- Configure settings (pipeline mode, retrieval setting, number of candidates, critic rounds, and task-specific controls).
 - Click "Generate Candidates" and wait for parallel processing.
-- View results in a grid with evolution timelines and download individual images or batch ZIP.
+- View results in a grid with evolution timelines and download individual outputs or batch ZIP.
+- For plot tasks, inspect and download the generated Matplotlib code directly from the UI.
 
 **2. Refine Image Tab**:
 - Upload a generated candidate or any diagram.
@@ -132,8 +151,32 @@ python main.py \
 - `--dataset_name`: Dataset to use (default: `PaperBananaBench`)
 - `--task_name`: Task type - `diagram` or `plot` (default: `diagram`)
 - `--split_name`: Dataset split (default: `test`)
-- `--exp_mode`: Experiment mode (see section below)
-- `--retrieval_setting`: Retrieval strategy - `auto`, `manual`, `random`, or `none` (default: `auto`)
+- `--exp_mode`: Experiment mode (default: `dev_full`; supported: `vanilla`, `dev_planner`, `dev_planner_stylist`, `dev_planner_critic`, `demo_planner_critic`, `dev_full`, `demo_full`, `dev_polish`, `dev_retriever`)
+- `--retrieval_setting`: Retrieval strategy - `auto`, `auto-full`, `manual`, `random`, or `none` (default: `auto`)
+
+**Low-Cost Live Smoke Tests:**
+```bash
+# Diagram smoke test with low-cost Gemini flash models
+python scripts/live_smoke_test.py \
+  --task_name diagram \
+  --provider gemini \
+  --model_name gemini-3.1-flash-lite-preview \
+  --image_model_name gemini-3.1-flash-image-preview \
+  --retrieval_setting none \
+  --exp_mode demo_planner_critic \
+  --max_critic_rounds 0
+
+# Plot smoke test with Gemini flash-lite
+python scripts/live_smoke_test.py \
+  --task_name plot \
+  --provider gemini \
+  --model_name gemini-3.1-flash-lite-preview \
+  --retrieval_setting none \
+  --exp_mode demo_planner_critic \
+  --max_critic_rounds 0
+```
+
+The smoke script saves raw outputs plus summary/failure metadata under `results/smoke/`.
 
 **Experiment Modes:**
 - `vanilla`: Direct generation without planning or refinement
@@ -216,8 +259,10 @@ streamlit run visualize/show_referenced_eval.py
 - **Flexible Modes**: Multiple experiment modes for different use cases
 
 ### Interactive Demo
-- **Parallel Generation**: Generate up to 20 candidate diagrams simultaneously
+- **Parallel Generation**: Generate up to 20 candidate diagrams or plots simultaneously
 - **Pipeline Visualization**: Track the evolution through Planner → Stylist → Critic stages
+- **Task-Aware Inputs**: Switch between methodology/caption mode and raw-data/plot-intent mode
+- **Plot Code Visibility**: Inspect and export generated Matplotlib code for plot candidates
 - **High-Resolution Refinement**: Upscale to 2K/4K using Image Generation APIs
 - **Batch Export**: Download all candidates as PNG or ZIP
 
@@ -230,7 +275,6 @@ streamlit run visualize/show_referenced_eval.py
 
 ## TODO List
 - [ ] Add support for using manually selected examples. Provide **a** user-friendly interface.
-- [ ] Upload code for generating statistical plots.
 - [ ] Upload code for improving existing diagrams based on style guideline.
 - [ ] Expand the reference set to support more areas beyond computer science.
 

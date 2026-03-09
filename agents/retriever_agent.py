@@ -113,12 +113,22 @@ class RetrieverAgent(BaseAgent):
             logger.info(f"✅ 随机检索完成, {len(data['top10_references'])} 个参考")
 
         elif retrieval_setting == "auto":
-            data["top10_references"] = await self._retrieve_and_parse(data, cfg, lite=True)
+            data["top10_references"] = await self._retrieve_and_parse(
+                data,
+                cfg,
+                candidate_id=candidate_id,
+                lite=True,
+            )
             data["retrieved_examples"] = []
             logger.info(f"✅ 自动检索完成 (lite), {len(data['top10_references'])} 个参考: {data['top10_references']}")
 
         elif retrieval_setting == "auto-full":
-            data["top10_references"] = await self._retrieve_and_parse(data, cfg, lite=False)
+            data["top10_references"] = await self._retrieve_and_parse(
+                data,
+                cfg,
+                candidate_id=candidate_id,
+                lite=False,
+            )
             data["retrieved_examples"] = []
             logger.info(f"✅ 自动检索完成 (full), {len(data['top10_references'])} 个参考: {data['top10_references']}")
         else:
@@ -146,14 +156,25 @@ class RetrieverAgent(BaseAgent):
         sample_size = min(10, len(id_list))
         return random.sample(id_list, sample_size) if sample_size > 0 else []
 
-    async def _retrieve_and_parse(self, data: Dict[str, Any], cfg: dict, lite: bool = True) -> list:
+    async def _retrieve_and_parse(
+        self,
+        data: Dict[str, Any],
+        cfg: dict,
+        candidate_id: Any = "N/A",
+        lite: bool = True,
+    ) -> list:
         """
         通过 LLM 智能检索最相关的参考示例。
 
         Args:
             lite: True = 仅发送 caption（~3万 tokens），False = 发送完整 methodology（~80万 tokens）
         """
-        content = str(data["content"])
+        raw_content = data["content"]
+        content = (
+            json.dumps(raw_content, ensure_ascii=False)
+            if isinstance(raw_content, (dict, list))
+            else str(raw_content)
+        )
         visual_intent = data["visual_intent"]
 
         user_prompt = f"**Target Input**\n- {cfg['target_labels'][0]}: {visual_intent}\n- {cfg['target_labels'][1]}: {content}\n\n**Candidate Pool**\n"

@@ -12,15 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Model and API Configuration for PaperVizAgent
+# Model and API Configuration for PaperBanana
 
-# Default Models
+# Shared defaults for Gemini provider
 defaults:
-  model_name: "" # e.g., "gemini-3-pro-preview"
+  model_name: "" # e.g., "gemini-3.1-pro-preview"
   image_model_name: "" # e.g., "gemini-3-pro-image-preview"
   
-# API Keys. If you are using all gemini models, you can leave the other keys empty.
+# API Keys. Recommended precedence:
+# 1. Environment variables
+# 2. configs/local/*.txt
+# 3. This YAML file
 api_keys:
-  google_api_key: "" # e.g. "xxxxxxxxxxxxx"
+  google_api_key: "" # optional if using configs/local/google_api_key.txt
   openai_api_key: ""
   anthropic_api_key: ""
+
+# Evolink Provider configuration
+evolink:
+  api_key: "" # optional if using configs/local/evolink_api_key.txt
+  base_url: "https://api.evolink.ai"
+  model_name: "gemini-2.5-flash"
+  image_model_name: "nano-banana-2-lite"

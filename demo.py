@@ -25,12 +25,16 @@ import json
 import time
 import re
 import html
+import threading
+import uuid
 from io import BytesIO
 from PIL import Image
 from pathlib import Path
 import sys
 import os
 from datetime import datetime
+from dataclasses import dataclass, field
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Optional
 
 # 将项目根目录添加到路径
@@ -48,21 +52,26 @@ try:
     from agents.polish_agent import PolishAgent
     print("调试：已导入所有代理模块")
     from utils import config
+    from utils.config_loader import load_model_config
+    from utils.demo_task_utils import (
+        build_evolution_stages,
+        create_sample_inputs,
+        find_final_stage_keys,
+        get_task_ui_config,
+        normalize_task_name,
+    )
+    from utils import image_utils
+    from utils.concurrency import compute_effective_concurrency
     from utils.paperviz_processor import PaperVizProcessor
+    from utils.runtime_settings import (
+        build_all_provider_ui_defaults,
+        initialize_provider_runtime,
+        resolve_runtime_settings,
+    )
     print("调试：已导入工具模块")
 
-    import yaml
-    config_path = Path(__file__).parent / "configs" / "model_config.yaml"
-    model_config_data = {}
-    if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            model_config_data = yaml.safe_load(f) or {}
-
-    def get_config_val(section, key, env_var, default=""):
-        val = os.getenv(env_var)
-        if not val and section in model_config_data:
-            val = model_config_data[section].get(key)
-        return val or default
+    REPO_ROOT = Path(__file__).parent
+    model_config_data = load_model_config(REPO_ROOT)
 
 except ImportError as e:
     print(f"调试：导入错误：{e}")
@@ -132,6 +141,28 @@ def get_refine_request_timeout_seconds(provider: str) -> float:
     return 180.0
 
 
+def get_refine_max_attempts(provider: str) -> int:
+    """获取精修最大尝试次数，避免无限重试占满会话。"""
+    env_val = os.getenv("REFINE_MAX_ATTEMPTS", "").strip()
+    if env_val:
+        try:
+            return max(int(env_val), 1)
+        except ValueError:
+            pass
+    return 12 if provider == "gemini" else 10
+
+
+def get_refine_total_timeout_seconds(provider: str) -> float:
+    """获取精修总时长上限（秒）。"""
+    env_val = os.getenv("REFINE_TOTAL_TIMEOUT_SEC", "").strip()
+    if env_val:
+        try:
+            return max(float(env_val), 60.0)
+        except ValueError:
+            pass
+    return 1800.0 if provider == "gemini" else 1200.0
+
+
 def extract_retry_delay_seconds(error_text: str) -> Optional[float]:
     """从错误文本中提取建议重试等待时间（秒）。"""
     if not error_text:
@@ -188,43 +219,143 @@ GEMINI_TEXT_MODELS = [
     "gemini-3-flash-preview",
 ]
 
+GEMINI_IMAGE_MODELS = [
+    "gemini-3-pro-image-preview",
+    "gemini-3.1-flash-image-preview",
+]
 
-def create_sample_inputs(method_content, caption, diagram_type="Pipeline", aspect_ratio="16:9", num_copies=10, max_critic_rounds=3, image_resolution="2K"):
-    """创建多份输入数据副本用于并行处理。"""
-    base_input = {
-        "filename": "demo_input",
-        "caption": caption,
-        "content": method_content,
-        "visual_intent": caption,
-        "additional_info": {
-            "rounded_ratio": aspect_ratio,
-            "image_resolution": image_resolution  # 添加图像分辨率参数
-        },
-        "max_critic_rounds": max_critic_rounds  # 添加评审轮次控制
-    }
+def build_provider_defaults():
+    return build_all_provider_ui_defaults(
+        base_dir=REPO_ROOT,
+        model_config_data=model_config_data,
+    )
 
-    # 创建 num_copies 份相同的输入，每份带有唯一标识符
-    inputs = []
-    for i in range(num_copies):
-        input_copy = base_input.copy()
-        input_copy["filename"] = f"demo_input_candidate_{i}"
-        input_copy["candidate_id"] = i
-        inputs.append(input_copy)
 
-    return inputs
+PROVIDER_DEFAULTS = build_provider_defaults()
+REFINE_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+REFINE_JOBS_LOCK = threading.Lock()
+REFINE_JOBS: dict[str, "RefineJobState"] = {}
 
-def compute_effective_concurrency(concurrency_mode: str, max_concurrent: int, total_candidates: int) -> int:
-    """计算有效并发数（不改变业务逻辑，仅控制并发上限）。"""
-    safe_max = max(1, int(max_concurrent))
-    safe_total = max(1, int(total_candidates))
 
-    if concurrency_mode == "auto":
-        return min(safe_max, safe_total)
-    return min(safe_max, safe_total)
+@dataclass
+class RefineJobState:
+    job_id: str
+    provider: str
+    image_model_name: str
+    resolution: str
+    aspect_ratio: str
+    num_images: int
+    input_mime_type: str
+    original_image_bytes: bytes = field(repr=False)
+    status: str = "running"
+    progress_done: int = 0
+    progress_total: int = 0
+    status_history: list[str] = field(default_factory=list)
+    refined_images: list[dict] = field(default_factory=list)
+    failed_results: list[dict] = field(default_factory=list)
+    error: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    elapsed_seconds: float = 0.0
+    cancel_requested: bool = False
+    future: Future | None = field(default=None, repr=False)
+    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {
+                "job_id": self.job_id,
+                "provider": self.provider,
+                "image_model_name": self.image_model_name,
+                "resolution": self.resolution,
+                "aspect_ratio": self.aspect_ratio,
+                "num_images": self.num_images,
+                "input_mime_type": self.input_mime_type,
+                "status": self.status,
+                "progress_done": self.progress_done,
+                "progress_total": self.progress_total,
+                "status_history": list(self.status_history),
+                "refined_images": list(self.refined_images),
+                "failed_results": list(self.failed_results),
+                "error": self.error,
+                "created_at": self.created_at,
+                "elapsed_seconds": self.elapsed_seconds,
+                "cancel_requested": self.cancel_requested,
+                "original_image_bytes": self.original_image_bytes,
+            }
+
+
+def _store_refine_job(job: RefineJobState) -> None:
+    with REFINE_JOBS_LOCK:
+        REFINE_JOBS[job.job_id] = job
+
+
+def get_refine_job(job_id: str) -> RefineJobState | None:
+    with REFINE_JOBS_LOCK:
+        return REFINE_JOBS.get(job_id)
+
+
+def get_refine_job_snapshot(job_id: str) -> dict | None:
+    job = get_refine_job(job_id)
+    if job is None:
+        return None
+    return job.snapshot()
+
+
+def clear_refine_job(job_id: str) -> None:
+    with REFINE_JOBS_LOCK:
+        REFINE_JOBS.pop(job_id, None)
+
+
+def append_refine_job_status(job_id: str, message: str) -> None:
+    job = get_refine_job(job_id)
+    if job is None or not message:
+        return
+    with job.lock:
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        if job.status_history and job.status_history[-1] == line:
+            return
+        job.status_history.append(line)
+        if len(job.status_history) > 20:
+            job.status_history = job.status_history[-20:]
+
+
+def update_refine_job_progress(job_id: str, done_count: int, total_count: int) -> None:
+    job = get_refine_job(job_id)
+    if job is None:
+        return
+    with job.lock:
+        job.progress_done = done_count
+        job.progress_total = total_count
+
+
+def request_refine_job_cancel(job_id: str) -> None:
+    job = get_refine_job(job_id)
+    if job is None:
+        return
+    with job.lock:
+        job.cancel_requested = True
+        job.cancel_event.set()
+    append_refine_job_status(job_id, "[精修] 已收到停止请求，将在当前请求结束后停止后续重试。")
+
+
+def persist_refine_job_results(snapshot: dict) -> None:
+    st.session_state["refined_images"] = snapshot.get("refined_images", [])
+    st.session_state["refine_failed_results"] = snapshot.get("failed_results", [])
+    st.session_state["refine_timestamp"] = snapshot.get("created_at", "N/A")
+    st.session_state["refine_result_resolution"] = snapshot.get("resolution", "N/A")
+    st.session_state["refine_count"] = snapshot.get("num_images", 0)
+    st.session_state["refine_provider_used"] = snapshot.get("provider", "N/A")
+    st.session_state["refine_image_model_used"] = snapshot.get("image_model_name", "N/A")
+    st.session_state["refine_original_image_bytes"] = snapshot.get("original_image_bytes", b"")
+    st.session_state["refine_original_input_mime_type"] = snapshot.get("input_mime_type", "image/png")
+    st.session_state["refine_failed_results"] = snapshot.get("failed_results", [])
 
 
 async def process_parallel_candidates(
     data_list,
+    task_name="diagram",
     exp_mode="dev_planner_critic",
     retrieval_setting="auto",
     model_name="",
@@ -237,16 +368,21 @@ async def process_parallel_candidates(
     status_callback: Optional[Callable[[str], None]] = None,
 ):
     """使用 PaperVizProcessor 并行处理多个候选方案。"""
+    task_name = normalize_task_name(task_name)
     total_candidates = len(data_list)
     effective_concurrent = compute_effective_concurrency(
         concurrency_mode=concurrency_mode,
         max_concurrent=max_concurrent,
         total_candidates=total_candidates,
+        task_name=task_name,
+        retrieval_setting=retrieval_setting,
+        exp_mode=exp_mode,
+        provider=provider,
     )
 
     print(f"\n{'='*60}")
     print(f"[DEBUG] process_parallel_candidates 开始")
-    print(f"[DEBUG]   provider={provider}, model={model_name}, image_model={image_model_name}")
+    print(f"[DEBUG]   task={task_name}, provider={provider}, model={model_name}, image_model={image_model_name}")
     print(f"[DEBUG]   exp_mode={exp_mode}, retrieval={retrieval_setting}, candidates={total_candidates}")
     print(f"[DEBUG]   concurrency_mode={concurrency_mode}, max_concurrent={max_concurrent}, effective={effective_concurrent}")
     print(f"[DEBUG]   api_key={'已设置 (' + api_key[:8] + '...)' if api_key else '未设置'}")
@@ -265,31 +401,39 @@ async def process_parallel_candidates(
         except Exception as cb_error:
             print(f"[DEBUG] [WARN] 状态回调失败(初始化): {cb_error}")
 
-    # 使用界面传入的 API Key 初始化 Provider
     from utils import generation_utils
-
-    if api_key:
-        if provider == "evolink":
-            generation_utils.init_evolink_provider(api_key)
-        elif provider == "gemini":
-            generation_utils.init_gemini_client(api_key)
-    else:
+    runtime_settings = resolve_runtime_settings(
+        provider,
+        api_key=api_key,
+        model_name=model_name,
+        image_model_name=image_model_name,
+        concurrency_mode=concurrency_mode,
+        max_concurrent=max_concurrent,
+        base_dir=REPO_ROOT,
+        model_config_data=model_config_data,
+    )
+    initialize_provider_runtime(runtime_settings)
+    if not runtime_settings.api_key:
         print(f"[DEBUG] [WARN] 未提供 API Key，Provider 可能无法正常工作")
 
     # 创建实验配置
     exp_config = config.ExpConfig(
         dataset_name="Demo",
+        task_name=task_name,
         split_name="demo",
         exp_mode=exp_mode,
         retrieval_setting=retrieval_setting,
-        concurrency_mode=concurrency_mode,
-        max_concurrent=int(max_concurrent),
-        model_name=model_name,
-        image_model_name=image_model_name,
-        provider=provider,
+        concurrency_mode=runtime_settings.concurrency_mode,
+        max_concurrent=runtime_settings.max_concurrent,
+        model_name=runtime_settings.model_name,
+        image_model_name=runtime_settings.image_model_name,
+        provider=runtime_settings.provider,
         work_dir=Path(__file__).parent,
     )
-    print(f"[DEBUG] ExpConfig 已创建: provider={exp_config.provider}, model={exp_config.model_name}, image_model={exp_config.image_model_name}")
+    print(
+        f"[DEBUG] ExpConfig 已创建: task={exp_config.task_name}, provider={exp_config.provider}, "
+        f"model={exp_config.model_name}, image_model={exp_config.image_model_name}"
+    )
 
     # 初始化处理器及所有代理
     processor = PaperVizProcessor(
@@ -336,9 +480,13 @@ async def refine_image_with_nanoviz(
     image_size="2K",
     api_key="",
     provider="evolink",
+    image_model_name="",
     task_id: int = 1,
     status_callback: Optional[Callable[[str], None]] = None,
     input_mime_type: str = "image/png",
+    max_attempts: Optional[int] = None,
+    max_total_seconds: Optional[float] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ):
     """
     使用图像编辑 API 精修图像，支持 Evolink 和 Gemini 两种 Provider。
@@ -359,11 +507,29 @@ async def refine_image_with_nanoviz(
     attempt = 0
     sleep_seconds = 2.0
     timeout_seconds = get_refine_request_timeout_seconds(provider)
+    attempt_limit = max_attempts or get_refine_max_attempts(provider)
+    total_time_limit = max_total_seconds or get_refine_total_timeout_seconds(provider)
+    started_at = time.perf_counter()
     task_prefix = f"task#{task_id}"
     normalized_mime_type = normalize_image_mime_type(input_mime_type)
+    runtime_settings = resolve_runtime_settings(
+        provider,
+        api_key=api_key,
+        image_model_name=image_model_name,
+        base_dir=REPO_ROOT,
+        model_config_data=model_config_data,
+    )
 
-    # 精修功能：持续重试直到成功（按用户要求）
-    while True:
+    while attempt < attempt_limit:
+        if cancel_check and cancel_check():
+            emit_refine_status(
+                status_callback,
+                f"[精修][{task_prefix}] cancelled before attempt={attempt + 1}",
+            )
+            return None, "⛔ 已取消精修任务"
+        elapsed = time.perf_counter() - started_at
+        if elapsed >= total_time_limit:
+            break
         attempt += 1
         try:
             if provider == "gemini":
@@ -376,20 +542,25 @@ async def refine_image_with_nanoviz(
                 from google.genai import types
 
                 contents = [
-                    types.Part.from_text(text=edit_prompt),
+                    types.Part.from_text(
+                        text=image_utils.build_gemini_image_prompt(
+                            edit_prompt,
+                            aspect_ratio=aspect_ratio,
+                            image_size=image_size,
+                        )
+                    ),
                     types.Part.from_bytes(mime_type=normalized_mime_type, data=image_bytes),
                 ]
+                config_kwargs = {
+                    "temperature": 1.0,
+                    "max_output_tokens": 8192,
+                    "response_modalities": ["IMAGE"],
+                }
                 config = types.GenerateContentConfig(
-                    temperature=1.0,
-                    max_output_tokens=8192,
-                    response_modalities=["IMAGE"],
-                    image_config=types.ImageConfig(
-                        aspect_ratio=aspect_ratio,
-                        image_size=image_size,
-                    ),
+                    **config_kwargs,
                 )
 
-                selected_model = st.session_state.get("tab1_image_model_name", "gemini-3-pro-image-preview")
+                selected_model = runtime_settings.image_model_name
                 gemini_model_sequence = [selected_model]
                 if selected_model != "gemini-3.1-flash-image-preview":
                     gemini_model_sequence.append("gemini-3.1-flash-image-preview")
@@ -437,7 +608,7 @@ async def refine_image_with_nanoviz(
                     sleep_seconds = min(sleep_seconds * 1.2, 15.0)
                     continue
 
-                image_model = st.session_state.get("tab1_image_model_name", "nano-banana-2-lite")
+                image_model = runtime_settings.image_model_name
                 emit_refine_status(
                     status_callback,
                     f"[精修][{task_prefix}] attempt={attempt} model={image_model} timeout={int(timeout_seconds)}s",
@@ -502,10 +673,7 @@ async def refine_image_with_nanoviz(
             # Windows 套接字异常自愈：重建 client/provider 后继续。
             if "winerror 10038" in lower_error:
                 try:
-                    if provider == "gemini" and api_key:
-                        generation_utils.init_gemini_client(api_key)
-                    elif provider == "evolink" and api_key:
-                        generation_utils.init_evolink_provider(api_key)
+                    initialize_provider_runtime(runtime_settings)
                 except Exception as reinit_error:
                     try:
                         print(f"[精修][WARN] socket 自愈重建失败: {safe_log_text(reinit_error)}")
@@ -529,6 +697,22 @@ async def refine_image_with_nanoviz(
             await asyncio.sleep(delay)
             sleep_seconds = min(max(delay * 1.1, sleep_seconds * 1.25), 30.0)
 
+    elapsed = time.perf_counter() - started_at
+    if cancel_check and cancel_check():
+        emit_refine_status(
+            status_callback,
+            f"[精修][{task_prefix}] cancelled after {elapsed:.1f}s",
+        )
+        return None, "⛔ 已取消精修任务"
+    failure_message = (
+        f"❌ 图像精修失败：已达到重试上限（attempts={attempt_limit}, elapsed={elapsed:.1f}s）"
+    )
+    emit_refine_status(
+        status_callback,
+        f"[精修][{task_prefix}] exhausted attempts={attempt_limit} elapsed={elapsed:.1f}s",
+    )
+    return None, failure_message
+
 
 async def refine_images_with_count(
     image_bytes,
@@ -538,22 +722,27 @@ async def refine_images_with_count(
     image_size="2K",
     api_key="",
     provider="evolink",
+    image_model_name="",
     input_mime_type="image/png",
     progress_callback: Optional[Callable[[int, int], None]] = None,
     status_callback: Optional[Callable[[str], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ):
     """并发精修多张图像，按完成先后收集，避免被单一慢任务阻塞观感。"""
-    from utils import generation_utils
-
     safe_count = max(1, int(num_images))
     results = [None] * safe_count
     tasks = []
+    runtime_settings = resolve_runtime_settings(
+        provider,
+        api_key=api_key,
+        image_model_name=image_model_name,
+        base_dir=REPO_ROOT,
+        model_config_data=model_config_data,
+    )
 
     # 每次精修批次只初始化一次 Provider/Client，避免并发重建导致底层连接异常。
-    if provider == "gemini" and api_key:
-        generation_utils.init_gemini_client(api_key)
-    elif provider == "evolink" and api_key:
-        generation_utils.init_evolink_provider(api_key)
+    initialize_provider_runtime(runtime_settings)
+    semaphore = asyncio.Semaphore(min(safe_count, 3 if provider == "gemini" else 2))
 
     for idx in range(safe_count):
         variant_prompt = (
@@ -562,24 +751,37 @@ async def refine_images_with_count(
             f"but provide a distinct visual variant."
         )
         async def run_one(task_idx=idx, prompt_text=variant_prompt):
-            value = await refine_image_with_nanoviz(
-                image_bytes=image_bytes,
-                edit_prompt=prompt_text,
-                aspect_ratio=aspect_ratio,
-                image_size=image_size,
-                api_key=api_key,
-                provider=provider,
-                task_id=task_idx + 1,
-                status_callback=status_callback,
-                input_mime_type=input_mime_type,
-            )
-            return task_idx, value
+            async with semaphore:
+                if cancel_check and cancel_check():
+                    return task_idx, (None, "⛔ 已取消精修任务")
+                try:
+                    value = await refine_image_with_nanoviz(
+                        image_bytes=image_bytes,
+                        edit_prompt=prompt_text,
+                        aspect_ratio=aspect_ratio,
+                        image_size=image_size,
+                        api_key=runtime_settings.api_key,
+                        provider=runtime_settings.provider,
+                        image_model_name=runtime_settings.image_model_name,
+                        task_id=task_idx + 1,
+                        status_callback=status_callback,
+                        input_mime_type=input_mime_type,
+                        cancel_check=cancel_check,
+                    )
+                    return task_idx, value
+                except asyncio.CancelledError:
+                    return task_idx, (None, "⛔ 已取消精修任务")
 
         task = asyncio.create_task(run_one())
         tasks.append(task)
 
     done_count = 0
     for future in asyncio.as_completed(tasks):
+        if cancel_check and cancel_check():
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            break
         task_idx, value = await future
         results[task_idx] = value
         done_count += 1
@@ -596,57 +798,118 @@ async def refine_images_with_count(
             f"[精修] completed {done_count}/{safe_count} (task#{task_idx + 1})",
         )
 
-    return [x for x in results if x is not None]
+    return results
 
 
-def get_evolution_stages(result, exp_mode):
-    """从结果中提取所有演化阶段（图像和描述）。"""
-    task_name = "diagram"
-    stages = []
+def start_refine_background_job(
+    *,
+    image_bytes: bytes,
+    edit_prompt: str,
+    num_images: int,
+    aspect_ratio: str,
+    image_size: str,
+    api_key: str,
+    provider: str,
+    image_model_name: str,
+    input_mime_type: str,
+) -> str:
+    job_id = f"refine_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    runtime_settings = resolve_runtime_settings(
+        provider,
+        api_key=api_key,
+        image_model_name=image_model_name,
+        base_dir=REPO_ROOT,
+        model_config_data=model_config_data,
+    )
+    job = RefineJobState(
+        job_id=job_id,
+        provider=runtime_settings.provider,
+        image_model_name=runtime_settings.image_model_name,
+        resolution=image_size,
+        aspect_ratio=aspect_ratio,
+        num_images=int(num_images),
+        input_mime_type=input_mime_type,
+        original_image_bytes=image_bytes,
+    )
+    _store_refine_job(job)
+    append_refine_job_status(job_id, f"[精修] input mime={input_mime_type}, bytes={len(image_bytes)}")
 
-    # 阶段 1：规划器输出
-    planner_img_key = f"target_{task_name}_desc0_base64_jpg"
-    planner_desc_key = f"target_{task_name}_desc0"
-    if planner_img_key in result and result[planner_img_key]:
-        stages.append({
-            "name": "📋 规划器",
-            "image_key": planner_img_key,
-            "desc_key": planner_desc_key,
-            "description": "基于方法内容生成的初始图表规划"
-        })
+    def worker():
+        started_at = time.perf_counter()
+        try:
+            def on_progress(done_count: int, total_count: int):
+                update_refine_job_progress(job_id, done_count, total_count)
 
-    # 阶段 2：风格化器输出（仅限 demo_full 模式）
-    if exp_mode == "demo_full":
-        stylist_img_key = f"target_{task_name}_stylist_desc0_base64_jpg"
-        stylist_desc_key = f"target_{task_name}_stylist_desc0"
-        if stylist_img_key in result and result[stylist_img_key]:
-            stages.append({
-                "name": "✨ 风格化器",
-                "image_key": stylist_img_key,
-                "desc_key": stylist_desc_key,
-                "description": "经过风格优化的描述"
-            })
+            def on_status(message: str):
+                append_refine_job_status(job_id, message)
 
-    # 阶段 3+：评审迭代
-    for round_idx in range(4):  # 检查最多 4 轮
-        critic_img_key = f"target_{task_name}_critic_desc{round_idx}_base64_jpg"
-        critic_desc_key = f"target_{task_name}_critic_desc{round_idx}"
-        critic_sugg_key = f"target_{task_name}_critic_suggestions{round_idx}"
+            refined_results = asyncio.run(
+                refine_images_with_count(
+                    image_bytes=image_bytes,
+                    edit_prompt=edit_prompt,
+                    num_images=int(num_images),
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                    api_key=runtime_settings.api_key,
+                    provider=runtime_settings.provider,
+                    image_model_name=runtime_settings.image_model_name,
+                    input_mime_type=input_mime_type,
+                    progress_callback=on_progress,
+                    status_callback=on_status,
+                    cancel_check=job.cancel_event.is_set,
+                )
+            )
 
-        if critic_img_key in result and result[critic_img_key]:
-            stages.append({
-                "name": f"🔍 评审第 {round_idx} 轮",
-                "image_key": critic_img_key,
-                "desc_key": critic_desc_key,
-                "suggestions_key": critic_sugg_key,
-                "description": f"根据评审反馈进行优化（第 {round_idx} 次迭代）"
-            })
+            refined_images = []
+            failed_refine_results = []
+            for idx, result_item in enumerate(refined_results):
+                if not result_item:
+                    failed_refine_results.append(
+                        {"index": idx + 1, "message": "❌ 未返回任何结果"}
+                    )
+                    continue
+                refined_bytes, message = result_item
+                if refined_bytes:
+                    refined_images.append({
+                        "index": idx + 1,
+                        "bytes": refined_bytes,
+                        "message": message,
+                    })
+                else:
+                    failed_refine_results.append({
+                        "index": idx + 1,
+                        "message": message,
+                    })
 
-    return stages
+            with job.lock:
+                job.refined_images = refined_images
+                job.failed_results = failed_refine_results
+                job.progress_done = max(job.progress_done, len(refined_images) + len(failed_refine_results))
+                job.progress_total = max(job.progress_total, int(num_images))
+                job.elapsed_seconds = time.perf_counter() - started_at
+                if job.cancel_requested:
+                    job.status = "cancelled"
+                else:
+                    job.status = "completed"
+            append_refine_job_status(
+                job_id,
+                f"[精修] finished status={job.status} success={len(refined_images)} failed={len(failed_refine_results)}",
+            )
+        except Exception as exc:
+            with job.lock:
+                job.status = "failed"
+                job.error = f"{type(exc).__name__}: {exc}"
+                job.elapsed_seconds = time.perf_counter() - started_at
+            append_refine_job_status(job_id, f"[精修] failed: {job.error}")
 
-def display_candidate_result(result, candidate_id, exp_mode):
+    job.future = REFINE_JOB_EXECUTOR.submit(worker)
+    return job_id
+
+
+def display_candidate_result(result, candidate_id, exp_mode, task_name="diagram"):
     """展示单个候选方案的结果。"""
-    task_name = "diagram"
+    task_name = normalize_task_name(task_name)
+    task_config = get_task_ui_config(task_name)
 
     if isinstance(result, dict) and result.get("status") == "failed":
         st.error(f"候选方案 {candidate_id} 失败：{result.get('error', 'Unknown error')}")
@@ -656,35 +919,21 @@ def display_candidate_result(result, candidate_id, exp_mode):
                 st.code(clean_text(detail))
         return
 
-    # 根据 exp_mode 决定展示哪张图像
-    # 对于演示模式，始终尝试查找最后一轮评审结果
-    final_image_key = None
-    final_desc_key = None
-
-    # 尝试查找最后一轮评审
-    for round_idx in range(3, -1, -1):  # 检查第 3、2、1、0 轮
-        image_key = f"target_{task_name}_critic_desc{round_idx}_base64_jpg"
-        if image_key in result and result[image_key]:
-            final_image_key = image_key
-            final_desc_key = f"target_{task_name}_critic_desc{round_idx}"
-            break
-
-    # 如果没有完成评审轮次则使用备选方案
-    if not final_image_key:
-        if exp_mode == "demo_full":
-            # demo_full 在可视化之前使用风格化器
-            final_image_key = f"target_{task_name}_stylist_desc0_base64_jpg"
-            final_desc_key = f"target_{task_name}_stylist_desc0"
-        else:
-            # demo_planner_critic 使用规划器输出
-            final_image_key = f"target_{task_name}_desc0_base64_jpg"
-            final_desc_key = f"target_{task_name}_desc0"
+    final_image_key, final_desc_key = find_final_stage_keys(
+        result,
+        task_name=task_name,
+        exp_mode=exp_mode,
+    )
 
     # 展示最终图像
     if final_image_key and final_image_key in result:
         img = base64_to_image(result[final_image_key])
         if img:
-            st.image(img, use_container_width=True, caption=f"候选方案 {candidate_id}（最终版）")
+            st.image(
+                img,
+                use_container_width=True,
+                caption=f"候选方案 {candidate_id}（{task_config['final_caption']}）",
+            )
 
             # 添加下载按钮
             buffered = BytesIO()
@@ -702,8 +951,22 @@ def display_candidate_result(result, candidate_id, exp_mode):
     else:
         st.warning(f"候选方案 {candidate_id} 未生成图像")
 
+    final_code_key = f"{final_desc_key}_code" if final_desc_key else ""
+    if task_name == "plot" and final_code_key and result.get(final_code_key):
+        code_text = clean_text(result[final_code_key])
+        with st.expander("🧪 查看最终 Matplotlib 代码", expanded=False):
+            st.code(code_text, language="python")
+            st.download_button(
+                label="[DOWN] 下载代码",
+                data=code_text.encode("utf-8"),
+                file_name=f"candidate_{candidate_id}.py",
+                mime="text/x-python",
+                key=f"download_candidate_code_{candidate_id}",
+                use_container_width=True,
+            )
+
     # 在折叠面板中展示演化时间线
-    stages = get_evolution_stages(result, exp_mode)
+    stages = build_evolution_stages(result, exp_mode, task_name=task_name)
     if len(stages) > 1:
         with st.expander(f"🔄 查看演化时间线（{len(stages)} 个阶段）", expanded=False):
             st.caption("查看图表在不同流水线阶段的演化过程")
@@ -722,6 +985,11 @@ def display_candidate_result(result, candidate_id, exp_mode):
                     with st.expander(f"📝 描述", expanded=False):
                         cleaned_desc = clean_text(result[stage['desc_key']])
                         st.write(cleaned_desc)
+
+                if task_name == "plot" and stage.get("code_key") and stage["code_key"] in result:
+                    with st.expander("🧪 本阶段代码", expanded=False):
+                        cleaned_code = clean_text(result[stage["code_key"]])
+                        st.code(cleaned_code, language="python")
 
                 # 展示评审建议（如有）
                 if 'suggestions_key' in stage and stage['suggestions_key'] in result:
@@ -755,23 +1023,39 @@ def main():
 
     # ==================== 选项卡 1：生成候选方案 ====================
     with tab1:
-        st.markdown("### 从您的方法章节和图注生成多个图表候选方案")
+        task_name = normalize_task_name(st.session_state.get("tab1_task_name", "diagram"))
+        task_config = get_task_ui_config(task_name)
+        st.markdown(f"### {task_config['intro']}")
 
         # 侧边栏配置（选项卡 1）
         with st.sidebar:
             st.title("[SET] 生成设置")
+
+            task_name = st.selectbox(
+                "任务类型",
+                ["diagram", "plot"],
+                index=0 if task_name == "diagram" else 1,
+                key="tab1_task_name",
+                format_func=lambda x: {
+                    "diagram": "diagram - 学术图解",
+                    "plot": "plot - 统计图",
+                }[x],
+                help="选择生成方法图解还是统计图",
+            )
+            task_config = get_task_ui_config(task_name)
+            st.info(f"**当前任务：** {task_config['display_name_cn']}")
 
             exp_mode = st.selectbox(
                 "流水线模式",
                 ["demo_planner_critic", "demo_full"],
                 index=0,
                 key="tab1_exp_mode",
-                help="选择使用哪种代理流水线"
+                help="选择使用哪种代理流水线",
             )
 
             mode_info = {
                 "demo_planner_critic": "规划器 → 可视化器 → 评审器 → 可视化器",
-                "demo_full": "检索器 → 规划器 → 风格化器 → 可视化器 → 评审器 → 可视化器。（风格化器能让图表更具美感，但可能过度简化。建议两种模式都尝试并选择最佳结果）"
+                "demo_full": "检索器 → 规划器 → 风格化器 → 可视化器 → 评审器 → 可视化器。（风格化器能让图表更具美感，但可能过度简化。建议两种模式都尝试并选择最佳结果）",
             }
             st.info(f"**流水线：** {mode_info[exp_mode]}")
 
@@ -782,20 +1066,26 @@ def main():
                 key="tab1_retrieval_setting",
                 help="如何检索参考图表",
                 format_func=lambda x: {
-                    "auto": "auto — LLM 智能选参考，仅 caption（~3万 tokens/候选）",
-                    "auto-full": "auto-full — LLM 智能选参考，含完整论文（[WARN] ~80万 tokens/候选）",
+                    "auto": "auto — LLM 智能选参考，轻量模式",
+                    "auto-full": "auto-full — LLM 智能选参考，完整上下文",
                     "random": "random — 随机选 10 个参考（免费）",
                     "none": "none — 不检索参考（免费）",
                 }[x],
             )
 
+            retrieval_target_label = "可视化意图" if task_name == "plot" else "图注"
+            retrieval_ref_path = REPO_ROOT / "data" / "PaperBananaBench" / task_name / "ref.json"
             _retrieval_cost_info = {
-                "auto": "💡 轻量 auto：仅发送图注（caption）给 LLM 做匹配，每个候选约 **3 万 tokens**，性价比最高。",
-                "auto-full": "[WARN] **注意**：完整 auto 将 200 篇参考论文的全文发给 LLM，每个候选消耗约 **80 万 tokens**。仅在需要高精度检索时使用。",
-                "random": "✅ 随机从 298 篇参考中选 10 个，不调用 API，零费用。",
-                "none": "✅ 跳过检索，不使用参考图表，零费用。",
+                "auto": f"💡 轻量 auto：仅发送{retrieval_target_label}给 LLM 做匹配，适合大多数试跑。",
+                "auto-full": "[WARN] 完整 auto：会把候选参考的完整内容发给 LLM 做匹配，成本显著更高，仅在需要高精度检索时使用。",
+                "random": "✅ 随机从参考集中抽样，不调用额外检索推理。",
+                "none": "✅ 跳过检索，不使用参考图表。",
             }
             st.info(_retrieval_cost_info[retrieval_setting])
+            if retrieval_setting != "none" and not retrieval_ref_path.exists():
+                st.warning(
+                    f"当前仓库未发现 `{task_name}/ref.json`，运行时会自动回退到 `none`。"
+                )
 
             num_candidates = st.number_input(
                 "候选方案数量",
@@ -803,7 +1093,7 @@ def main():
                 max_value=20,
                 value=5,
                 key="tab1_num_candidates",
-                help="要并行生成多少个候选方案"
+                help="要并行生成多少个候选方案",
             )
 
             concurrency_mode = st.selectbox(
@@ -811,7 +1101,7 @@ def main():
                 ["auto", "manual"],
                 index=0,
                 key="tab1_concurrency_mode",
-                help="auto：自动并发（默认）| manual：使用固定并发上限"
+                help="auto：自动并发（默认）| manual：使用固定并发上限",
             )
 
             max_concurrent = st.number_input(
@@ -821,7 +1111,7 @@ def main():
                 value=20,
                 step=1,
                 key="tab1_max_concurrent",
-                help="候选任务并发上限，默认 20"
+                help="候选任务并发上限，默认 20",
             )
 
             effective_concurrency_preview = compute_effective_concurrency(
@@ -841,26 +1131,31 @@ def main():
                     f"策略：{concurrency_mode} | 并发上限：{int(max_concurrent)} | 候选数：{int(num_candidates)}"
                 )
 
-            aspect_ratio = st.selectbox(
-                "宽高比",
-                COMMON_ASPECT_RATIOS,
-                key="tab1_aspect_ratio",
-                help="生成图表的宽高比"
-            )
+            if task_config["uses_render_controls"]:
+                aspect_ratio = st.selectbox(
+                    "宽高比",
+                    COMMON_ASPECT_RATIOS,
+                    key="tab1_aspect_ratio",
+                    help="生成图表的宽高比",
+                )
 
-            provider_for_resolution = st.session_state.get("tab1_provider", "gemini")
-            resolution_options = ["1K", "2K", "4K"] if provider_for_resolution == "gemini" else ["2K", "4K"]
-            default_resolution = st.session_state.get("tab1_image_resolution", "2K")
-            if default_resolution not in resolution_options:
-                default_resolution = "2K" if "2K" in resolution_options else resolution_options[0]
+                provider_for_resolution = st.session_state.get("tab1_provider", "gemini")
+                resolution_options = ["1K", "2K", "4K"] if provider_for_resolution == "gemini" else ["2K", "4K"]
+                default_resolution = st.session_state.get("tab1_image_resolution", "2K")
+                if default_resolution not in resolution_options:
+                    default_resolution = "2K" if "2K" in resolution_options else resolution_options[0]
 
-            image_resolution = st.selectbox(
-                "图像分辨率",
-                resolution_options,
-                index=resolution_options.index(default_resolution),
-                key="tab1_image_resolution",
-                help=f"生成图像的分辨率（当前 Provider 支持：{', '.join(resolution_options)}）"
-            )
+                image_resolution = st.selectbox(
+                    "图像分辨率",
+                    resolution_options,
+                    index=resolution_options.index(default_resolution),
+                    key="tab1_image_resolution",
+                    help=f"生成图像的分辨率（当前 Provider 支持：{', '.join(resolution_options)}）",
+                )
+            else:
+                aspect_ratio = "16:9"
+                image_resolution = "2K"
+                st.info("当前任务使用 Matplotlib 代码渲染，宽高比和图像分辨率控件暂不生效。")
 
             max_critic_rounds = st.number_input(
                 "最大评审轮次",
@@ -868,53 +1163,32 @@ def main():
                 max_value=5,
                 value=3,
                 key="tab1_max_critic_rounds",
-                help="评审优化迭代的最大轮次"
+                help="评审优化迭代的最大轮次",
             )
 
-            # Provider 选择
             provider = st.selectbox(
                 "API Provider",
                 ["gemini", "evolink"],
                 index=0,
                 key="tab1_provider",
-                help="gemini：Google 官方 API（需翻墙）| evolink：国内代理"
+                help="gemini：Google 官方 API（需翻墙）| evolink：国内代理",
             )
 
-            # Provider 对应的默认配置
-            _provider_defaults = {
-                "evolink": {
-                    "api_key_label": "API Key",
-                    "api_key_help": "Evolink API 密钥（Bearer Token）",
-                    "api_key_default": get_config_val("evolink", "api_key", "EVOLINK_API_KEY", ""),
-                    "model_name": "gemini-2.5-flash",
-                    "image_model_name": "nano-banana-2-lite",
-                },
-                "gemini": {
-                    "api_key_label": "Google API Key",
-                    "api_key_help": "Google AI Studio API 密钥",
-                    "api_key_default": get_config_val("api_keys", "google_api_key", "GOOGLE_API_KEY", ""),
-                    "model_name": "gemini-3.1-pro-preview",
-                    "image_model_name": "gemini-3-pro-image-preview",
-                },
-            }
-            _pd = _provider_defaults[provider]
-
-            # 首次加载时设置默认值
+            provider_defaults = PROVIDER_DEFAULTS[provider]
             if "tab1_api_key" not in st.session_state:
-                st.session_state["tab1_api_key"] = _pd["api_key_default"]
+                st.session_state["tab1_api_key"] = provider_defaults["api_key_default"]
             if "tab1_model_name" not in st.session_state:
-                st.session_state["tab1_model_name"] = _pd["model_name"]
+                st.session_state["tab1_model_name"] = provider_defaults["model_name"]
             if "tab1_image_model_name" not in st.session_state:
-                st.session_state["tab1_image_model_name"] = _pd["image_model_name"]
+                st.session_state["tab1_image_model_name"] = provider_defaults["image_model_name"]
 
-            # 检测 provider 切换，重置模型名称
             if "prev_provider" not in st.session_state:
                 st.session_state["prev_provider"] = provider
             if st.session_state["prev_provider"] != provider:
                 st.session_state["prev_provider"] = provider
-                st.session_state["tab1_model_name"] = _pd["model_name"]
-                st.session_state["tab1_image_model_name"] = _pd["image_model_name"]
-                st.session_state["tab1_api_key"] = _pd["api_key_default"]
+                st.session_state["tab1_model_name"] = provider_defaults["model_name"]
+                st.session_state["tab1_image_model_name"] = provider_defaults["image_model_name"]
+                st.session_state["tab1_api_key"] = provider_defaults["api_key_default"]
                 new_resolution_options = ["1K", "2K", "4K"] if provider == "gemini" else ["2K", "4K"]
                 if st.session_state.get("tab1_image_resolution") not in new_resolution_options:
                     st.session_state["tab1_image_resolution"] = (
@@ -922,20 +1196,15 @@ def main():
                     )
                 st.rerun()
 
-            # API Key
             api_key = st.text_input(
-                _pd["api_key_label"],
+                provider_defaults["api_key_label"],
                 type="password",
                 key="tab1_api_key",
-                help=_pd["api_key_help"]
+                help=provider_defaults["api_key_help"],
             )
 
-            # 文本模型
             if provider == "gemini":
-                current_gemini_text_model = st.session_state.get(
-                    "tab1_model_name",
-                    GEMINI_TEXT_MODELS[0],
-                )
+                current_gemini_text_model = st.session_state.get("tab1_model_name", GEMINI_TEXT_MODELS[0])
                 if current_gemini_text_model not in GEMINI_TEXT_MODELS:
                     current_gemini_text_model = GEMINI_TEXT_MODELS[0]
 
@@ -944,166 +1213,115 @@ def main():
                     GEMINI_TEXT_MODELS,
                     index=GEMINI_TEXT_MODELS.index(current_gemini_text_model),
                     key="tab1_model_name",
-                    help="用于推理/规划/评审的模型名称（可展开选择）"
+                    help="用于推理/规划/评审的模型名称（可展开选择）",
                 )
             else:
                 model_name = st.text_input(
                     "文本模型",
                     key="tab1_model_name",
-                    help="用于推理/规划/评审的模型名称"
+                    help="用于推理/规划/评审的模型名称",
                 )
 
-            # 图像模型
-            if provider == "gemini":
-                gemini_image_models = [
-                    "gemini-3-pro-image-preview",
-                    "gemini-3.1-flash-image-preview",
-                ]
-                current_gemini_image_model = st.session_state.get(
-                    "tab1_image_model_name",
-                    "gemini-3-pro-image-preview",
-                )
-                if current_gemini_image_model not in gemini_image_models:
-                    current_gemini_image_model = "gemini-3-pro-image-preview"
+            if task_config["uses_image_model"]:
+                if provider == "gemini":
+                    current_gemini_image_model = st.session_state.get(
+                        "tab1_image_model_name",
+                        "gemini-3-pro-image-preview",
+                    )
+                    if current_gemini_image_model not in GEMINI_IMAGE_MODELS:
+                        current_gemini_image_model = "gemini-3-pro-image-preview"
 
-                image_model_name = st.selectbox(
-                    "图像模型",
-                    gemini_image_models,
-                    index=gemini_image_models.index(current_gemini_image_model),
-                    key="tab1_image_model_name",
-                    help="用于图像生成的模型名称（可展开选择）"
-                )
+                    image_model_name = st.selectbox(
+                        "图像模型",
+                        GEMINI_IMAGE_MODELS,
+                        index=GEMINI_IMAGE_MODELS.index(current_gemini_image_model),
+                        key="tab1_image_model_name",
+                        help="用于图像生成的模型名称（可展开选择）",
+                    )
+                else:
+                    image_model_name = st.text_input(
+                        "图像模型",
+                        key="tab1_image_model_name",
+                        help="用于图像生成的模型名称",
+                    )
             else:
-                image_model_name = st.text_input(
-                    "图像模型",
-                    key="tab1_image_model_name",
-                    help="用于图像生成的模型名称"
-                )
+                image_model_name = ""
+                st.caption("当前任务不会调用图像生成模型，最终图像由文本模型生成的 Matplotlib 代码渲染。")
 
         st.divider()
 
         # 输入区域
         st.markdown("## 📝 输入")
+        st.caption(task_config["intro"])
 
-        # 示例内容
-        example_method = r"""## Methodology: The PaperBanana Framework
-
-        In this section, we present the architecture of PaperBanana, a reference-driven agentic framework for automated academic illustration. As illustrated in Figure \ref{fig:methodology_diagram}, PaperBanana orchestrates a collaborative team of five specialized agents—Retriever, Planner, Stylist, Visualizer, and Critic—to transform raw scientific content into publication-quality diagrams and plots. (See Appendix \ref{app_sec:agent_prompts} for prompts)
-
-### Retriever Agent
-
-Given the source context $S$ and the communicative intent $C$, the Retriever Agent identifies $N$ most relevant examples $\mathcal{E} = \{E_n\}_{n=1}^{N} \subset \mathcal{R}$ from the fixed reference set $\mathcal{R}$ to guide the downstream agents. As defined in Section \ref{sec:task_formulation}, each example $E_i \in \mathcal{R}$ is a triplet $(S_i, C_i, I_i)$.
-To leverage the reasoning capabilities of VLMs, we adopt a generative retrieval approach where the VLM performs selection over candidate metadata:
-$$
-\mathcal{E} = \text{VLM}_{\text{Ret}} \left( S, C, \{ (S_i, C_i) \}_{E_i \in \mathcal{R}} \right)
-$$
-Specifically, the VLM is instructed to rank candidates by matching both research domain (e.g., Agent & Reasoning) and diagram type (e.g., pipeline, architecture), with visual structure being prioritized over topic similarity. By explicitly reasoned selection of reference illustrations $I_i$ whose corresponding contexts $(S_i, C_i)$ best match the current requirements, the Retriever provides a concrete foundation for both structural logic and visual style.
-
-### Planner Agent
-
-The Planner Agent serves as the cognitive core of the system. It takes the source context $S$, communicative intent $C$, and retrieved examples $\mathcal{E}$ as inputs. By performing in-context learning from the demonstrations in $\mathcal{E}$, the Planner translates the unstructured or structured data in $S$ into a comprehensive and detailed textual description $P$ of the target illustration:
-$$
-P = \text{VLM}_{\text{plan}}(S, C, \{ (S_i, C_i, I_i) \}_{E_i \in \mathcal{E}})
-$$
-
-### Stylist Agent
-
-To ensure the output adheres to the aesthetic standards of modern academic manuscripts, the Stylist Agent acts as a design consultant.
-A primary challenge lies in defining a comprehensive "academic style," as manual definitions are often incomplete.
-To address this, the Stylist traverses the entire reference collection $\mathcal{R}$ to automatically synthesize an *Aesthetic Guideline* $\mathcal{G}$ covering key dimensions such as color palette, shapes and containers, lines and arrows, layout and composition, and typography and icons (see Appendix \ref{app_sec:auto_summarized_style_guide} for the summarized guideline and implementation details). Armed with this guideline, the Stylist refines each initial description $P$ into a stylistically optimized version $P^*$:
-$$
-P^* = \text{VLM}_{\text{style}}(P, \mathcal{G})
-$$
-This ensures that the final illustration is not only accurate but also visually professional.
-
-### Visualizer Agent
-
-After receiving the stylistically optimized description $P^*$, the Visualizer Agent collaborates with the Critic Agent to render academic illustrations and iteratively refine their quality. The Visualizer Agent leverages an image generation model to transform textual descriptions into visual output. In each iteration $t$, given a description $P_t$, the Visualizer generates:
-$$
-I_t = \text{Image-Gen}(P_t)
-$$
-where the initial description $P_0$ is set to $P^*$.
-
-### Critic Agent
-
-The Critic Agent forms a closed-loop refinement mechanism with the Visualizer by closely examining the generated image $I_t$ and providing refined description $P_{t+1}$ to the Visualizer. Upon receiving the generated image $I_t$ at iteration $t$, the Critic inspects it against the original source context $(S, C)$ to identify factual misalignments, visual glitches, or areas for improvement. It then provides targeted feedback and produces a refined description $P_{t+1}$ that addresses the identified issues:
-$$
-P_{t+1} = \text{VLM}_{\text{critic}}(I_t, S, C, P_t)
-$$
-This revised description is then fed back to the Visualizer for regeneration. The Visualizer-Critic loop iterates for $T=3$ rounds, with the final output being $I = I_T$. This iterative refinement process ensures that the final illustration meets the high standards required for academic dissemination.
-
-### Extension to Statistical Plots
-
-The framework extends to statistical plots by adjusting the Visualizer and Critic agents. For numerical precision, the Visualizer converts the description $P_t$ into executable Python Matplotlib code: $I_t = \text{VLM}_{\text{code}}(P_t)$. The Critic evaluates the rendered plot and generates a refined description $P_{t+1}$ addressing inaccuracies or imperfections: $P_{t+1} = \text{VLM}_{\text{critic}}(I_t, S, C, P_t)$. The same $T=3$ round iterative refinement process applies. While we prioritize this code-based approach for accuracy, we also explore direct image generation in Section \ref{sec:discussion}. See Appendix \ref{app_sec:plot_agent_prompt} for adjusted prompts."""
-
-        example_caption = "Figure 1: Overview of our PaperBanana framework. Given the source context and communicative intent, we first apply a Linear Planning Phase to retrieve relevant reference examples and synthesize a stylistically optimized description. We then use an Iterative Refinement Loop (consisting of Visualizer and Critic agents) to transform the description into visual output and conduct multi-round refinements to produce the final academic illustration."
+        content_state_key = f"tab1_{task_name}_content"
+        visual_state_key = f"tab1_{task_name}_visual_intent"
+        content_example_key = f"tab1_{task_name}_content_example_selector"
+        visual_example_key = f"tab1_{task_name}_visual_example_selector"
+        example_options = ["无", task_config["example_name"]]
 
         col_input1, col_input2 = st.columns([3, 2])
 
         with col_input1:
-            # 方法内容示例选择器
-            method_example = st.selectbox(
-                "加载示例（方法章节）",
-                ["无", "PaperBanana 框架"],
-                key="method_example_selector"
+            content_example = st.selectbox(
+                task_config["content_selector_label"],
+                example_options,
+                key=content_example_key,
             )
-
-            # 根据示例选择或会话状态设置值
-            if method_example == "PaperBanana 框架":
-                method_value = example_method
+            if content_example == task_config["example_name"]:
+                content_value = task_config["example_content"]
             else:
-                method_value = st.session_state.get("method_content", "")
+                content_value = st.session_state.get(content_state_key, "")
 
-            method_content = st.text_area(
-                "方法章节内容（建议使用 Markdown 格式）",
-                value=method_value,
+            input_content = st.text_area(
+                task_config["content_label"],
+                value=content_value,
                 height=250,
-                placeholder="在此粘贴方法章节内容...",
-                help="论文中描述方法的章节内容。建议使用 Markdown 格式。"
+                placeholder=task_config["content_placeholder"],
+                help=task_config["content_help"],
+                key=f"{content_state_key}_editor",
             )
 
         with col_input2:
-            # 图注示例选择器
-            caption_example = st.selectbox(
-                "加载示例（图注）",
-                ["无", "PaperBanana 框架"],
-                key="caption_example_selector"
+            visual_example = st.selectbox(
+                task_config["visual_selector_label"],
+                example_options,
+                key=visual_example_key,
             )
-
-            # 根据示例选择或会话状态设置值
-            if caption_example == "PaperBanana 框架":
-                caption_value = example_caption
+            if visual_example == task_config["example_name"]:
+                visual_value = task_config["example_visual_intent"]
             else:
-                caption_value = st.session_state.get("caption", "")
+                visual_value = st.session_state.get(visual_state_key, "")
 
-            caption = st.text_area(
-                "图注（建议使用 Markdown 格式）",
-                value=caption_value,
+            visual_intent = st.text_area(
+                task_config["visual_label"],
+                value=visual_value,
                 height=250,
-                placeholder="输入图注...",
-                help="要生成的图表的标题或描述。建议使用 Markdown 格式。"
+                placeholder=task_config["visual_placeholder"],
+                help=task_config["visual_help"],
+                key=f"{visual_state_key}_editor",
             )
 
-        # 处理按钮
         if st.button("🚀 生成候选方案", type="primary", use_container_width=True):
-            if not method_content or not caption:
-                st.error("请同时提供方法内容和图注！")
+            if not input_content or not visual_intent:
+                st.error(
+                    f"请同时提供{task_config['content_input_name']}和{task_config['visual_input_name']}！"
+                )
             else:
-                # 保存到会话状态
-                st.session_state["method_content"] = method_content
-                st.session_state["caption"] = caption
+                st.session_state[content_state_key] = input_content
+                st.session_state[visual_state_key] = visual_intent
 
                 with st.spinner(
                     f"正在并行生成 {num_candidates} 个候选方案（策略={concurrency_mode}, 上限={int(max_concurrent)}）..."
                 ):
-                    # 创建输入数据列表
                     input_data_list = create_sample_inputs(
-                        method_content=method_content,
-                        caption=caption,
+                        content=input_content,
+                        visual_intent=visual_intent,
+                        task_name=task_name,
                         aspect_ratio=aspect_ratio,
                         num_copies=num_candidates,
                         max_critic_rounds=max_critic_rounds,
-                        image_resolution=image_resolution
+                        image_resolution=image_resolution,
                     )
 
                     effective_concurrency_runtime = compute_effective_concurrency(
@@ -1153,10 +1371,10 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                             + f"\n\n`已耗时 {elapsed:.1f}s`"
                         )
 
-                    # 并行处理
                     try:
                         results, used_concurrency = asyncio.run(process_parallel_candidates(
                             input_data_list,
+                            task_name=task_name,
                             exp_mode=exp_mode,
                             retrieval_setting=retrieval_setting,
                             model_name=model_name,
@@ -1176,6 +1394,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                         progress_text.caption(f"总耗时 {total_elapsed:.1f}s")
 
                         st.session_state["results"] = results
+                        st.session_state["task_name"] = task_name
                         st.session_state["exp_mode"] = exp_mode
                         st.session_state["concurrency_mode"] = concurrency_mode
                         st.session_state["max_concurrent"] = int(max_concurrent)
@@ -1184,19 +1403,16 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                         timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         st.session_state["timestamp"] = timestamp_str
 
-                        # 将结果保存为 JSON 文件
                         try:
-                            # 如果结果目录不存在则创建
-                            results_dir = Path(__file__).parent / "results" / "demo"
+                            results_dir = Path(__file__).parent / "results" / "demo" / task_name
                             results_dir.mkdir(parents=True, exist_ok=True)
 
-                            # 生成带时间戳的文件名
-                            json_filename = results_dir / f"demo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                            json_filename = results_dir / (
+                                f"demo_{task_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                            )
 
-                            # 保存为 JSON 并正确处理编码（与 main.py 一致）
                             with open(json_filename, "w", encoding="utf-8", errors="surrogateescape") as f:
                                 json_string = json.dumps(results, ensure_ascii=False, indent=4)
-                                # 清理无效的 UTF-8 字符
                                 json_string = json_string.encode("utf-8", "ignore").decode("utf-8")
                                 f.write(json_string)
 
@@ -1207,7 +1423,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                             )
                             failed_count = len(results) - success_count
                             st.success(
-                                f"✅ 任务完成：成功 {success_count} 个，失败 {failed_count} 个候选方案。"
+                                f"✅ {task_config['display_name_cn']}任务完成：成功 {success_count} 个，失败 {failed_count} 个候选方案。"
                             )
                             st.info(f"💾 结果已保存至：`{json_filename.name}`")
                         except Exception as e:
@@ -1223,21 +1439,32 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
         # 展示结果
         if "results" in st.session_state and st.session_state["results"]:
             results = st.session_state["results"]
+            current_task_name = normalize_task_name(
+                st.session_state.get(
+                    "task_name",
+                    results[0].get("task_name", task_name) if results else task_name,
+                )
+            )
+            current_task_config = get_task_ui_config(current_task_name)
             current_mode = st.session_state.get("exp_mode", exp_mode)
             timestamp = st.session_state.get("timestamp", "N/A")
             mode_used = st.session_state.get("concurrency_mode", concurrency_mode)
             max_used = st.session_state.get("max_concurrent", int(max_concurrent))
-            effective_used = st.session_state.get("effective_concurrent", compute_effective_concurrency(mode_used, int(max_used), len(results)))
+            effective_used = st.session_state.get(
+                "effective_concurrent",
+                compute_effective_concurrency(mode_used, int(max_used), len(results)),
+            )
 
             st.divider()
-            st.markdown("## 🎨 已生成的候选方案")
+            st.markdown(f"## 🎨 已生成的{current_task_config['display_name_cn']}候选方案")
             success_count = sum(
                 1 for item in results
                 if not (isinstance(item, dict) and item.get("status") == "failed")
             )
             failed_count = len(results) - success_count
             st.caption(
-                f"生成时间：{timestamp} | 流水线：{mode_info.get(current_mode, current_mode)} | "
+                f"生成时间：{timestamp} | 任务：{current_task_config['display_name_cn']} | "
+                f"流水线：{mode_info.get(current_mode, current_mode)} | "
                 f"并发：{mode_used} (max={max_used}, effective={effective_used}) | "
                 f"成功/失败：{success_count}/{failed_count}"
             )
@@ -1270,7 +1497,12 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                     result_idx = row_start + col_idx
                     if result_idx < num_results:
                         with cols[col_idx]:
-                            display_candidate_result(results[result_idx], result_idx, current_mode)
+                            display_candidate_result(
+                                results[result_idx],
+                                result_idx,
+                                current_mode,
+                                task_name=current_task_name,
+                            )
 
             # 添加 ZIP 下载按钮
             st.divider()
@@ -1280,28 +1512,23 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                 import zipfile
 
                 zip_buffer = BytesIO()
+                zip_export_failures = []
+                exported_count = 0
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    task_name = "diagram"
-
                     for candidate_id, result in enumerate(results):
+                        if isinstance(result, dict) and result.get("status") == "failed":
+                            zip_export_failures.append(
+                                f"候选 {candidate_id}: 流水线执行失败，无法导出"
+                            )
+                            continue
 
-                        # 查找最终图像键（逻辑与展示一致）
-                        final_image_key = None
+                        final_image_key, final_desc_key = find_final_stage_keys(
+                            result,
+                            task_name=current_task_name,
+                            exp_mode=current_mode,
+                        )
 
-                        # 尝试查找最后一轮评审
-                        for round_idx in range(3, -1, -1):
-                            image_key = f"target_{task_name}_critic_desc{round_idx}_base64_jpg"
-                            if image_key in result and result[image_key]:
-                                final_image_key = image_key
-                                break
-
-                        # 如果没有完成评审轮次则使用备选方案
-                        if not final_image_key:
-                            if current_mode == "demo_full":
-                                final_image_key = f"target_{task_name}_stylist_desc0_base64_jpg"
-                            else:
-                                final_image_key = f"target_{task_name}_desc0_base64_jpg"
-
+                        exported_any = False
                         if final_image_key and final_image_key in result:
                             try:
                                 raw_bytes = base64.b64decode(result[final_image_key])
@@ -1319,18 +1546,55 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                                     f"candidate_{candidate_id}.{image_ext}",
                                     raw_bytes
                                 )
-                            except Exception:
-                                pass
+                                exported_any = True
+                            except Exception as export_err:
+                                zip_export_failures.append(
+                                    f"候选 {candidate_id}: 图像导出失败 ({export_err})"
+                                )
+                        else:
+                            zip_export_failures.append(
+                                f"候选 {candidate_id}: 未找到最终图像"
+                            )
+
+                        if current_task_name == "plot" and final_desc_key:
+                            final_code_key = f"{final_desc_key}_code"
+                            if result.get(final_code_key):
+                                zip_file.writestr(
+                                    f"candidate_{candidate_id}.py",
+                                    clean_text(result[final_code_key]).encode("utf-8"),
+                                )
+                                exported_any = True
+
+                        if exported_any:
+                            exported_count += 1
 
                 zip_buffer.seek(0)
-                st.download_button(
-                    label="[DOWN] 下载 ZIP 压缩包",
-                    data=zip_buffer.getvalue(),
-                    file_name=f"papervizagent_candidates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                    mime="application/zip",
-                    use_container_width=True
-                )
-                st.success("ZIP 压缩包已准备好，可以下载！")
+                if exported_count > 0:
+                    st.download_button(
+                        label="[DOWN] 下载 ZIP 压缩包",
+                        data=zip_buffer.getvalue(),
+                        file_name=(
+                            f"paperbanana_{current_task_name}_candidates_"
+                            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+                        ),
+                        mime="application/zip",
+                        use_container_width=True
+                    )
+                    if zip_export_failures:
+                        st.warning(
+                            f"ZIP 已准备好：成功导出 {exported_count} 个，失败 {len(zip_export_failures)} 个。"
+                        )
+                        with st.expander("查看 ZIP 导出失败详情", expanded=False):
+                            for item in zip_export_failures:
+                                st.write(item)
+                    else:
+                        st.success("ZIP 压缩包已准备好，可以下载！")
+                else:
+                    st.error("ZIP 压缩包创建失败：没有可导出的候选结果。")
+                    if zip_export_failures:
+                        with st.expander("查看 ZIP 导出失败详情", expanded=True):
+                            for item in zip_export_failures:
+                                st.write(item)
             except Exception as e:
                 st.error(f"创建 ZIP 压缩包失败：{e}")
 
@@ -1369,6 +1633,56 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                 help="并发生成多少张不同的精修结果"
             )
 
+            refine_provider = st.selectbox(
+                "精修 Provider",
+                ["gemini", "evolink"],
+                index=0,
+                key="refine_provider",
+                help="为精修单独选择 Provider，不依赖生成页设置"
+            )
+            refine_provider_defaults = PROVIDER_DEFAULTS[refine_provider]
+
+            if "refine_api_key" not in st.session_state:
+                st.session_state["refine_api_key"] = refine_provider_defaults["api_key_default"]
+            if "refine_image_model_name" not in st.session_state:
+                st.session_state["refine_image_model_name"] = refine_provider_defaults["image_model_name"]
+            if "refine_prev_provider" not in st.session_state:
+                st.session_state["refine_prev_provider"] = refine_provider
+            if st.session_state["refine_prev_provider"] != refine_provider:
+                st.session_state["refine_prev_provider"] = refine_provider
+                st.session_state["refine_api_key"] = refine_provider_defaults["api_key_default"]
+                st.session_state["refine_image_model_name"] = refine_provider_defaults["image_model_name"]
+                st.rerun()
+
+            refine_api_key = st.text_input(
+                refine_provider_defaults["api_key_label"],
+                type="password",
+                key="refine_api_key",
+                help=refine_provider_defaults["api_key_help"]
+            )
+
+            if refine_provider == "gemini":
+                current_refine_gemini_image_model = st.session_state.get(
+                    "refine_image_model_name",
+                    PROVIDER_DEFAULTS["gemini"]["image_model_name"],
+                )
+                if current_refine_gemini_image_model not in GEMINI_IMAGE_MODELS:
+                    current_refine_gemini_image_model = PROVIDER_DEFAULTS["gemini"]["image_model_name"]
+
+                refine_image_model_name = st.selectbox(
+                    "精修图像模型",
+                    GEMINI_IMAGE_MODELS,
+                    index=GEMINI_IMAGE_MODELS.index(current_refine_gemini_image_model),
+                    key="refine_image_model_name",
+                    help="精修流程使用的图像模型"
+                )
+            else:
+                refine_image_model_name = st.text_input(
+                    "精修图像模型",
+                    key="refine_image_model_name",
+                    help="精修流程使用的图像模型"
+                )
+
         st.divider()
 
         # 上传区域
@@ -1398,109 +1712,102 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                     key="edit_prompt"
                 )
 
+                active_refine_job_id = st.session_state.get("active_refine_job_id")
+                active_refine_snapshot = (
+                    get_refine_job_snapshot(active_refine_job_id) if active_refine_job_id else None
+                )
+
                 if st.button("✨ 精修图像", type="primary", use_container_width=True):
                     if not edit_prompt:
                         st.error("请提供编辑指令！")
+                    elif active_refine_snapshot and active_refine_snapshot.get("status") == "running":
+                        st.warning("当前已有精修任务在后台运行，请先等待完成或停止当前任务。")
                     else:
-                        refine_progress_bar = st.progress(0.0, text="等待精修任务启动...")
-                        refine_progress_text = st.empty()
-                        refine_status_text = st.empty()
-                        refine_status_history = []
-                        refine_started_at = time.perf_counter()
+                        image_bytes = uploaded_file.getvalue()
+                        input_mime_type = normalize_image_mime_type(getattr(uploaded_file, "type", None))
+                        job_id = start_refine_background_job(
+                            image_bytes=image_bytes,
+                            edit_prompt=edit_prompt,
+                            num_images=int(refine_num_images),
+                            aspect_ratio=refine_aspect_ratio,
+                            image_size=refine_resolution,
+                            api_key=refine_api_key,
+                            provider=refine_provider,
+                            image_model_name=refine_image_model_name,
+                            input_mime_type=input_mime_type,
+                        )
+                        st.session_state["refined_images"] = []
+                        st.session_state["refine_failed_results"] = []
+                        st.session_state["active_refine_job_id"] = job_id
+                        st.session_state["last_refine_completed_job_id"] = None
+                        st.info("已启动后台精修任务，页面会自动刷新显示进度。")
+                        st.rerun()
 
-                        def on_refine_progress(done_count: int, total_count: int):
-                            ratio = 0.0 if total_count <= 0 else min(done_count / total_count, 1.0)
-                            elapsed = time.perf_counter() - refine_started_at
-                            refine_progress_bar.progress(
-                                ratio,
-                                text=f"精修进度：已完成 {done_count}/{total_count}",
-                            )
-                            refine_progress_text.caption(
-                                f"已耗时 {elapsed:.1f}s | 剩余 {max(total_count - done_count, 0)} 张"
-                            )
+                finalized_refine_snapshot = None
+                active_refine_job_id = st.session_state.get("active_refine_job_id")
+                active_refine_snapshot = (
+                    get_refine_job_snapshot(active_refine_job_id) if active_refine_job_id else None
+                )
+                if active_refine_snapshot and active_refine_snapshot.get("status") in {"completed", "cancelled", "failed"}:
+                    finalized_refine_snapshot = active_refine_snapshot
+                    if st.session_state.get("last_refine_completed_job_id") != active_refine_job_id:
+                        persist_refine_job_results(active_refine_snapshot)
+                        st.session_state["last_refine_completed_job_id"] = active_refine_job_id
+                    st.session_state.pop("active_refine_job_id", None)
+                    clear_refine_job(active_refine_job_id)
+                    active_refine_snapshot = None
 
-                        def on_refine_status(message: str):
-                            if not message:
-                                return
-                            ts = datetime.now().strftime("%H:%M:%S")
-                            line = f"[{ts}] {message}"
-                            if refine_status_history and refine_status_history[-1] == line:
-                                return
-                            refine_status_history.append(line)
-                            if len(refine_status_history) > 10:
-                                refine_status_history.pop(0)
-                            html_lines = "<br>".join(html.escape(x) for x in refine_status_history)
-                            refine_status_text.markdown(
-                                (
-                                    "**精修实时状态（最近10条）**\n"
-                                    f"<div style='max-height:220px; overflow-y:auto; "
-                                    f"border:1px solid rgba(255,255,255,0.12); border-radius:8px; "
-                                    f"padding:8px 10px; line-height:1.6;'>"
-                                    f"{html_lines}"
-                                    "</div>"
-                                ),
-                                unsafe_allow_html=True,
-                            )
+                if active_refine_snapshot and active_refine_snapshot.get("status") == "running":
+                    progress_done = active_refine_snapshot.get("progress_done", 0)
+                    progress_total = max(active_refine_snapshot.get("progress_total", int(refine_num_images)), 1)
+                    ratio = min(progress_done / progress_total, 1.0)
+                    st.progress(
+                        ratio,
+                        text=f"后台精修进度：已完成 {progress_done}/{progress_total}",
+                    )
+                    st.caption(
+                        f"Provider: {active_refine_snapshot.get('provider')} | "
+                        f"模型: {active_refine_snapshot.get('image_model_name')} | "
+                        f"分辨率: {active_refine_snapshot.get('resolution')} | "
+                        f"停止请求: {'已发送' if active_refine_snapshot.get('cancel_requested') else '未发送'}"
+                    )
+                    status_lines = active_refine_snapshot.get("status_history", [])
+                    if status_lines:
+                        html_lines = "<br>".join(html.escape(x) for x in status_lines[-10:])
+                        st.markdown(
+                            (
+                                "**精修实时状态（最近10条）**\n"
+                                f"<div style='max-height:220px; overflow-y:auto; "
+                                f"border:1px solid rgba(255,255,255,0.12); border-radius:8px; "
+                                f"padding:8px 10px; line-height:1.6;'>"
+                                f"{html_lines}"
+                                "</div>"
+                            ),
+                            unsafe_allow_html=True,
+                        )
 
-                        with st.spinner(
-                            f"正在并发精修 {int(refine_num_images)} 张图像至 {refine_resolution} 分辨率... 这可能需要一分钟。"
-                        ):
-                            try:
-                                # 保持上传原图字节与 MIME（不做强制 JPEG 转换）
-                                image_bytes = uploaded_file.getvalue()
-                                input_mime_type = normalize_image_mime_type(getattr(uploaded_file, "type", None))
-                                on_refine_status(f"[精修] input mime={input_mime_type}, bytes={len(image_bytes)}")
+                    action_col1, action_col2 = st.columns(2)
+                    with action_col1:
+                        if st.button("🛑 停止精修", use_container_width=True):
+                            request_refine_job_cancel(active_refine_snapshot["job_id"])
+                            st.warning("已发送停止请求，系统会在当前请求结束后停止后续重试。")
+                            st.rerun()
+                    with action_col2:
+                        if st.button("🔄 刷新状态", use_container_width=True):
+                            st.rerun()
 
-                                # 并发调用精修 API
-                                refined_results = asyncio.run(
-                                    refine_images_with_count(
-                                        image_bytes=image_bytes,
-                                        edit_prompt=edit_prompt,
-                                        num_images=int(refine_num_images),
-                                        aspect_ratio=refine_aspect_ratio,
-                                        image_size=refine_resolution,
-                                        api_key=api_key,
-                                        provider=provider,
-                                        input_mime_type=input_mime_type,
-                                        progress_callback=on_refine_progress,
-                                        status_callback=on_refine_status,
-                                    )
-                                )
+                    time.sleep(1.0)
+                    st.rerun()
 
-                                total_refine_elapsed = time.perf_counter() - refine_started_at
-                                refine_progress_bar.progress(
-                                    1.0,
-                                    text=f"精修进度：已完成 {int(refine_num_images)}/{int(refine_num_images)}",
-                                )
-                                refine_progress_text.caption(f"总耗时 {total_refine_elapsed:.1f}s")
-
-                                refined_images = []
-                                for idx, (refined_bytes, message) in enumerate(refined_results):
-                                    if refined_bytes:
-                                        refined_images.append({
-                                            "index": idx + 1,
-                                            "bytes": refined_bytes,
-                                            "message": message,
-                                        })
-
-                                if refined_images:
-                                    st.session_state["refined_images"] = refined_images
-                                    st.session_state["refine_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    # 注意：不能写回与已实例化 widget 同名的 key（refine_resolution）。
-                                    st.session_state["refine_result_resolution"] = refine_resolution
-                                    st.session_state["refine_count"] = int(refine_num_images)
-                                    if "refined_image" in st.session_state:
-                                        st.session_state.pop("refined_image")
-                                    st.success(f"✅ 精修完成：成功生成 {len(refined_images)} 张图像。")
-                                    st.rerun()
-                                else:
-                                    st.error("[ERR] 未获得有效精修图像，请稍后重试。")
-                            except Exception as e:
-                                refine_progress_bar.empty()
-                                refine_progress_text.empty()
-                                st.error(f"精修过程中出错：{e}")
-                                import traceback
-                                st.code(traceback.format_exc())
+                if finalized_refine_snapshot:
+                    completed = len(finalized_refine_snapshot.get("refined_images", []))
+                    failed = len(finalized_refine_snapshot.get("failed_results", []))
+                    if finalized_refine_snapshot.get("status") == "completed":
+                        st.success(f"✅ 后台精修完成：成功 {completed} 张，失败 {failed} 张。")
+                    elif finalized_refine_snapshot.get("status") == "cancelled":
+                        st.warning(f"⛔ 精修已停止：成功 {completed} 张，失败/取消 {failed} 张。")
+                    else:
+                        st.error(f"❌ 后台精修失败：{finalized_refine_snapshot.get('error', 'Unknown error')}")
 
             # 展示精修结果（如有）
             if "refined_images" in st.session_state and st.session_state["refined_images"]:
@@ -1508,13 +1815,27 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                 st.markdown("## 🎨 精修结果")
                 final_resolution = st.session_state.get("refine_result_resolution", refine_resolution)
                 final_count = st.session_state.get("refine_count", len(st.session_state["refined_images"]))
+                refine_provider_used = st.session_state.get("refine_provider_used", refine_provider)
+                refine_image_model_used = st.session_state.get("refine_image_model_used", refine_image_model_name)
+                failed_refine_results = st.session_state.get("refine_failed_results", [])
                 st.caption(
                     f"生成时间：{st.session_state.get('refine_timestamp', 'N/A')} | "
-                    f"分辨率：{final_resolution} | 张数：{final_count}"
+                    f"分辨率：{final_resolution} | 张数：{final_count} | "
+                    f"Provider：{refine_provider_used} | 模型：{refine_image_model_used}"
                 )
+                if failed_refine_results:
+                    st.warning(f"有 {len(failed_refine_results)} 张精修失败。")
+                    with st.expander("查看失败详情", expanded=False):
+                        for item in failed_refine_results:
+                            st.write(f"结果 {item['index']}: {item['message']}")
 
                 st.markdown("### 精修前")
-                st.image(uploaded_image, use_container_width=True)
+                original_preview_bytes = st.session_state.get(
+                    "refine_original_image_bytes",
+                    uploaded_file.getvalue() if uploaded_file is not None else b"",
+                )
+                if original_preview_bytes:
+                    st.image(Image.open(BytesIO(original_preview_bytes)), use_container_width=True)
 
                 st.markdown(f"### 精修后（{final_resolution}）")
                 refined_images = st.session_state["refined_images"]

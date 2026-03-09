@@ -20,6 +20,7 @@ from typing import List, Dict, Any
 from abc import ABC, abstractmethod
 
 from utils.config import ExpConfig
+from utils import image_utils
 
 
 class BaseAgent(ABC):
@@ -189,24 +190,41 @@ class BaseAgent(ABC):
         else:
             from google.genai import types
 
-            gemini_image_size = image_utils.normalize_gemini_image_size(
-                image_resolution, default_size="1K"
+            prompt_with_hints = image_utils.build_gemini_image_prompt(
+                prompt,
+                aspect_ratio=aspect_ratio,
+                image_size=image_resolution,
             )
+            gemini_contents = self._inject_prompt_into_contents(_contents, prompt_with_hints)
             return await generation_utils.call_gemini_with_retry_async(
                 model_name=_model,
-                contents=_contents,
+                contents=gemini_contents,
                 config=types.GenerateContentConfig(
                     system_instruction=_sys,
                     temperature=_temp,
                     candidate_count=1,
                     max_output_tokens=max_output_tokens,
                     response_modalities=["IMAGE"],
-                    image_config=types.ImageConfig(
-                        aspect_ratio=aspect_ratio,
-                        image_size=gemini_image_size,
-                    ),
                 ),
                 max_attempts=max_attempts,
                 retry_delay=retry_delay,
                 error_context=error_context,
             )
+
+    @staticmethod
+    def _inject_prompt_into_contents(
+        contents: List[Dict[str, Any]],
+        prompt_text: str,
+    ) -> List[Dict[str, Any]]:
+        """Replace the first text part with the prompt, preserving reference images."""
+        updated_contents: List[Dict[str, Any]] = []
+        prompt_inserted = False
+        for item in contents:
+            if item.get("type") == "text" and not prompt_inserted:
+                updated_contents.append({"type": "text", "text": prompt_text})
+                prompt_inserted = True
+            else:
+                updated_contents.append(item)
+        if not prompt_inserted:
+            updated_contents.insert(0, {"type": "text", "text": prompt_text})
+        return updated_contents

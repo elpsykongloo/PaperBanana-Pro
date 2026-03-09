@@ -24,9 +24,17 @@ from io import BytesIO
 from PIL import Image
 import os
 import sys
+from pathlib import Path
 
 # Ensure local imports work
 sys.path.append(os.getcwd())
+
+from utils.pipeline_state import (
+    critic_desc_key,
+    detect_task_type_from_result,
+    get_available_critic_rounds,
+)
+from utils.result_paths import resolve_gt_image_path
 
 st.set_page_config(layout="wide", page_title="PaperBanana Pipeline Evolution", page_icon="🍌")
 
@@ -80,12 +88,8 @@ def base64_to_image(b64_str):
 
 def detect_task_type(item):
     """Detect whether data is for diagram or plot task."""
-    # Check for plot-specific fields
-    if "target_plot_desc0" in item or "target_plot_stylist_desc0" in item:
-        return "plot"
-    return "diagram"
-
-def display_stage_comparison(item):
+    return detect_task_type_from_result(item)
+def display_stage_comparison(item, results_path):
     """Display 2x2 grid comparison: Ground Truth + three pipeline stages."""
     st.markdown("### 📊 Pipeline Evolution Comparison")
     
@@ -130,15 +134,15 @@ def display_stage_comparison(item):
             "is_human": False
         })
     
-    # Critic rounds (0, 1, 2)
-    for round_idx in range(3):
-        critic_desc_key = f"{prefix}_critic_desc{round_idx}"
-        if critic_desc_key in item:
-            emoji = ["🔍", "🔍🔍", "🔍🔍🔍"][round_idx]
+    # Critic rounds
+    for round_idx in get_available_critic_rounds(item, task_type):
+        critic_key = critic_desc_key(task_type, round_idx)
+        if critic_key in item:
+            emoji = "🔍" * min(round_idx + 1, 3)
             available_stages.append({
-                "title": f"{emoji} Critic Round {round_idx}",
-                "desc_key": critic_desc_key,
-                "img_key": f"{critic_desc_key}_base64_jpg",
+                "title": f"{emoji} Critic Round {round_idx + 1}",
+                "desc_key": critic_key,
+                "img_key": f"{critic_key}_base64_jpg",
                 "suggestions_key": f"{prefix}_critic_suggestions{round_idx}",
                 "color": "green",
                 "is_human": False,
@@ -166,9 +170,15 @@ def display_stage_comparison(item):
                 if stage["is_human"]:
                     # Handle Human (Ground Truth) image
                     human_path = item.get("path_to_gt_image")
-                    if human_path and os.path.exists(human_path):
+                    resolved_human_path = resolve_gt_image_path(
+                        human_path,
+                        task_type=task_type,
+                        results_path=results_path,
+                        work_dir=os.getcwd(),
+                    )
+                    if resolved_human_path:
                         try:
-                            img = Image.open(human_path)
+                            img = Image.open(resolved_human_path)
                             st.image(img, use_container_width=True)
                         except Exception as e:
                             st.error(f"Failed to load Human image: {e}")
@@ -289,7 +299,7 @@ def main():
         # Simple heuristic: inspect the first item to guess task type for stats
         # (This assumes the file is consistent)
         sample = data[0] if data else {}
-        is_plot = "target_plot_desc0" in sample or "target_plot_stylist_desc0" in sample
+        is_plot = detect_task_type(sample) == "plot"
         
         if is_plot:
             has_all_stages = sum(1 for item in data if 
@@ -370,7 +380,7 @@ def main():
                     st.markdown(method_content)
             
             # Pipeline comparison
-            display_stage_comparison(item)
+            display_stage_comparison(item, file_path)
             
             # Critique
             display_critique(item)
