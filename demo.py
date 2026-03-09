@@ -74,7 +74,7 @@ try:
     from utils.run_report import build_failure_manifest, build_result_summary
     from utils.runtime_settings import (
         build_all_provider_ui_defaults,
-        initialize_provider_runtime,
+        build_runtime_context,
         resolve_runtime_settings,
     )
     print("调试：已导入工具模块")
@@ -422,7 +422,10 @@ async def process_parallel_candidates(
         base_dir=REPO_ROOT,
         model_config_data=model_config_data,
     )
-    initialize_provider_runtime(runtime_settings)
+    runtime_context = build_runtime_context(
+        runtime_settings,
+        status_hook=status_callback,
+    )
     if not runtime_settings.api_key:
         print(f"[DEBUG] [WARN] 未提供 API Key，Provider 可能无法正常工作")
 
@@ -462,24 +465,22 @@ async def process_parallel_candidates(
     concurrent_num = effective_concurrent
 
     try:
-        generation_utils.set_runtime_status_hook(status_callback)
-        async for result_data in processor.process_queries_batch(
-            data_list,
-            max_concurrent=concurrent_num,
-            do_eval=False,
-            status_callback=status_callback,
-        ):
-            results.append(result_data)
-            if progress_callback:
-                try:
-                    progress_callback(len(results), total_candidates, effective_concurrent)
-                except Exception as cb_error:
-                    print(f"[DEBUG] [WARN] 进度回调失败(更新): {cb_error}")
+        with generation_utils.use_runtime_context(runtime_context):
+            async for result_data in processor.process_queries_batch(
+                data_list,
+                max_concurrent=concurrent_num,
+                do_eval=False,
+                status_callback=status_callback,
+            ):
+                results.append(result_data)
+                if progress_callback:
+                    try:
+                        progress_callback(len(results), total_candidates, effective_concurrent)
+                    except Exception as cb_error:
+                        print(f"[DEBUG] [WARN] 进度回调失败(更新): {cb_error}")
     finally:
-        generation_utils.set_runtime_status_hook(None)
-        # 关闭 Evolink Provider 的共享 session，避免资源泄漏
-        if generation_utils.evolink_provider and hasattr(generation_utils.evolink_provider, 'close'):
-            await generation_utils.evolink_provider.close()
+        await generation_utils.close_runtime_context(runtime_context)
+        processor.shutdown()
 
     return results, effective_concurrent
 
@@ -497,6 +498,7 @@ async def refine_image_with_nanoviz(
     max_attempts: Optional[int] = None,
     max_total_seconds: Optional[float] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    runtime_context=None,
 ):
     """
     使用图像编辑 API 精修图像，支持 Evolink 和 Gemini 两种 Provider。
@@ -529,199 +531,211 @@ async def refine_image_with_nanoviz(
         base_dir=REPO_ROOT,
         model_config_data=model_config_data,
     )
+    active_runtime_context = runtime_context or build_runtime_context(
+        runtime_settings,
+        status_hook=status_callback,
+    )
+    owns_runtime_context = runtime_context is None
 
-    while attempt < attempt_limit:
+    try:
+        with generation_utils.use_runtime_context(active_runtime_context):
+            while attempt < attempt_limit:
+                if cancel_check and cancel_check():
+                    emit_refine_status(
+                        status_callback,
+                        f"[精修][{task_prefix}] cancelled before attempt={attempt + 1}",
+                    )
+                    return None, "⛔ 已取消精修任务"
+                elapsed = time.perf_counter() - started_at
+                if elapsed >= total_time_limit:
+                    break
+                attempt += 1
+                try:
+                    if provider == "gemini":
+                        # ====== Gemini 路径：多模态 API，直接传图片字节 ======
+                        gemini_client = generation_utils.get_gemini_client()
+                        if gemini_client is None:
+                            await asyncio.sleep(min(sleep_seconds, 10.0))
+                            sleep_seconds = min(sleep_seconds * 1.2, 15.0)
+                            continue
+
+                        from google.genai import types
+
+                        contents = [
+                            types.Part.from_text(
+                                text=image_utils.build_gemini_image_prompt(
+                                    edit_prompt,
+                                    aspect_ratio=aspect_ratio,
+                                    image_size=image_size,
+                                )
+                            ),
+                            types.Part.from_bytes(mime_type=normalized_mime_type, data=image_bytes),
+                        ]
+                        config_kwargs = {
+                            "temperature": 1.0,
+                            "max_output_tokens": 8192,
+                            "response_modalities": ["IMAGE"],
+                        }
+                        config = types.GenerateContentConfig(
+                            **config_kwargs,
+                        )
+
+                        selected_model = runtime_settings.image_model_name
+                        gemini_model_sequence = [selected_model]
+                        if selected_model != "gemini-3.1-flash-image-preview":
+                            gemini_model_sequence.append("gemini-3.1-flash-image-preview")
+
+                        # 每 5 次失败切换一次模型（循环）
+                        model_index = ((attempt - 1) // 5) % len(gemini_model_sequence)
+                        image_model = gemini_model_sequence[model_index]
+
+                        emit_refine_status(
+                            status_callback,
+                            f"[精修][{task_prefix}] attempt={attempt} model={image_model} timeout={int(timeout_seconds)}s",
+                        )
+                        response = await asyncio.wait_for(
+                            gemini_client.aio.models.generate_content(
+                                model=image_model,
+                                contents=contents,
+                                config=config,
+                            ),
+                            timeout=timeout_seconds,
+                        )
+
+                        if response and response.candidates and response.candidates[0].content.parts:
+                            for part in response.candidates[0].content.parts:
+                                if hasattr(part, "inline_data") and part.inline_data:
+                                    edited_image_data = part.inline_data.data
+                                    if isinstance(edited_image_data, bytes) and edited_image_data:
+                                        emit_refine_status(
+                                            status_callback,
+                                            f"[精修][{task_prefix}] success on attempt={attempt} model={image_model}",
+                                        )
+                                        return edited_image_data, f"✅ 图像精修成功！（第 {attempt} 次尝试）"
+                                    if isinstance(edited_image_data, str) and edited_image_data:
+                                        emit_refine_status(
+                                            status_callback,
+                                            f"[精修][{task_prefix}] success on attempt={attempt} model={image_model}",
+                                        )
+                                        return base64.b64decode(edited_image_data), f"✅ 图像精修成功！（第 {attempt} 次尝试）"
+
+                        raise RuntimeError("Gemini 未返回有效图像数据")
+
+                    else:
+                        # ====== Evolink 路径：上传图片获取 URL → image_urls ======
+                        evolink_provider = generation_utils.get_evolink_provider()
+                        if evolink_provider is None:
+                            await asyncio.sleep(min(sleep_seconds, 10.0))
+                            sleep_seconds = min(sleep_seconds * 1.2, 15.0)
+                            continue
+
+                        image_model = runtime_settings.image_model_name
+                        emit_refine_status(
+                            status_callback,
+                            f"[精修][{task_prefix}] attempt={attempt} model={image_model} timeout={int(timeout_seconds)}s",
+                        )
+
+                        # 步骤 1：上传原始图片到 Evolink 文件服务
+                        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                        ref_image_url = await generation_utils.upload_image_to_evolink(
+                            image_b64,
+                            media_type=normalized_mime_type,
+                        )
+                        try:
+                            print(f"[精修] attempt={attempt}, uploaded_ref={safe_log_text(ref_image_url[:80])}...")
+                        except Exception:
+                            pass
+
+                        # 步骤 2：图像生成 API（传入参考图 URL）
+                        result = await asyncio.wait_for(
+                            evolink_provider.generate_image(
+                                model_name=image_model,
+                                prompt=edit_prompt,
+                                aspect_ratio=aspect_ratio,
+                                quality=image_size,
+                                image_urls=[ref_image_url],
+                                max_attempts=1,
+                                retry_delay=3,
+                            ),
+                            timeout=timeout_seconds,
+                        )
+
+                        if result and result[0] and result[0] != "Error":
+                            edited_image_data = base64.b64decode(result[0])
+                            emit_refine_status(
+                                status_callback,
+                                f"[精修][{task_prefix}] success on attempt={attempt} model={image_model}",
+                            )
+                            return edited_image_data, f"✅ 图像精修成功！（第 {attempt} 次尝试）"
+
+                        raise RuntimeError("Evolink 未返回有效图像数据")
+
+                except asyncio.TimeoutError:
+                    err_text = (
+                        f"{provider} request timed out after {int(timeout_seconds)}s "
+                        f"(attempt={attempt}, {task_prefix})"
+                    )
+                    delay = min(max(sleep_seconds, 3.0), 20.0)
+                    emit_refine_status(
+                        status_callback,
+                        f"[精修][{task_prefix}] timeout, wait {delay:.1f}s then retry",
+                    )
+                    try:
+                        print(f"[精修][重试] {safe_log_text(err_text, max_len=1200)}")
+                    except Exception:
+                        pass
+                    await asyncio.sleep(delay)
+                    sleep_seconds = min(max(delay * 1.2, sleep_seconds * 1.25), 30.0)
+                except Exception as e:
+                    # 不向前端抛错，持续重试直到成功
+                    error_text = safe_log_text(e, max_len=2000)
+                    lower_error = error_text.lower()
+
+                    # Windows 套接字异常自愈：重建 client/provider 后继续。
+                    if "winerror 10038" in lower_error:
+                        try:
+                            generation_utils.reinitialize_runtime_context(active_runtime_context)
+                        except Exception as reinit_error:
+                            try:
+                                print(f"[精修][WARN] socket 自愈重建失败: {safe_log_text(reinit_error)}")
+                            except Exception:
+                                pass
+
+                    suggested_delay = extract_retry_delay_seconds(error_text)
+                    delay = min(sleep_seconds, 20.0)
+                    if suggested_delay is not None:
+                        delay = min(max(delay, suggested_delay), 60.0)
+                    if "limit: 0" in lower_error:
+                        delay = max(delay, 30.0)
+                    emit_refine_status(
+                        status_callback,
+                        f"[精修][{task_prefix}] failed attempt={attempt}, wait {delay:.1f}s | {error_text[:160]}",
+                    )
+                    try:
+                        print(f"[精修][重试] attempt={attempt}, err={error_text}")
+                    except Exception:
+                        pass
+                    await asyncio.sleep(delay)
+                    sleep_seconds = min(max(delay * 1.1, sleep_seconds * 1.25), 30.0)
+
+        elapsed = time.perf_counter() - started_at
         if cancel_check and cancel_check():
             emit_refine_status(
                 status_callback,
-                f"[精修][{task_prefix}] cancelled before attempt={attempt + 1}",
+                f"[精修][{task_prefix}] cancelled after {elapsed:.1f}s",
             )
             return None, "⛔ 已取消精修任务"
-        elapsed = time.perf_counter() - started_at
-        if elapsed >= total_time_limit:
-            break
-        attempt += 1
-        try:
-            if provider == "gemini":
-                # ====== Gemini 路径：多模态 API，直接传图片字节 ======
-                if generation_utils.gemini_client is None:
-                    await asyncio.sleep(min(sleep_seconds, 10.0))
-                    sleep_seconds = min(sleep_seconds * 1.2, 15.0)
-                    continue
-
-                from google.genai import types
-
-                contents = [
-                    types.Part.from_text(
-                        text=image_utils.build_gemini_image_prompt(
-                            edit_prompt,
-                            aspect_ratio=aspect_ratio,
-                            image_size=image_size,
-                        )
-                    ),
-                    types.Part.from_bytes(mime_type=normalized_mime_type, data=image_bytes),
-                ]
-                config_kwargs = {
-                    "temperature": 1.0,
-                    "max_output_tokens": 8192,
-                    "response_modalities": ["IMAGE"],
-                }
-                config = types.GenerateContentConfig(
-                    **config_kwargs,
-                )
-
-                selected_model = runtime_settings.image_model_name
-                gemini_model_sequence = [selected_model]
-                if selected_model != "gemini-3.1-flash-image-preview":
-                    gemini_model_sequence.append("gemini-3.1-flash-image-preview")
-
-                # 每 5 次失败切换一次模型（循环）
-                model_index = ((attempt - 1) // 5) % len(gemini_model_sequence)
-                image_model = gemini_model_sequence[model_index]
-
-                emit_refine_status(
-                    status_callback,
-                    f"[精修][{task_prefix}] attempt={attempt} model={image_model} timeout={int(timeout_seconds)}s",
-                )
-                response = await asyncio.wait_for(
-                    generation_utils.gemini_client.aio.models.generate_content(
-                        model=image_model,
-                        contents=contents,
-                        config=config,
-                    ),
-                    timeout=timeout_seconds,
-                )
-
-                if response and response.candidates and response.candidates[0].content.parts:
-                    for part in response.candidates[0].content.parts:
-                        if hasattr(part, "inline_data") and part.inline_data:
-                            edited_image_data = part.inline_data.data
-                            if isinstance(edited_image_data, bytes) and edited_image_data:
-                                emit_refine_status(
-                                    status_callback,
-                                    f"[精修][{task_prefix}] success on attempt={attempt} model={image_model}",
-                                )
-                                return edited_image_data, f"✅ 图像精修成功！（第 {attempt} 次尝试）"
-                            if isinstance(edited_image_data, str) and edited_image_data:
-                                emit_refine_status(
-                                    status_callback,
-                                    f"[精修][{task_prefix}] success on attempt={attempt} model={image_model}",
-                                )
-                                return base64.b64decode(edited_image_data), f"✅ 图像精修成功！（第 {attempt} 次尝试）"
-
-                raise RuntimeError("Gemini 未返回有效图像数据")
-
-            else:
-                # ====== Evolink 路径：上传图片获取 URL → image_urls ======
-                if generation_utils.evolink_provider is None:
-                    await asyncio.sleep(min(sleep_seconds, 10.0))
-                    sleep_seconds = min(sleep_seconds * 1.2, 15.0)
-                    continue
-
-                image_model = runtime_settings.image_model_name
-                emit_refine_status(
-                    status_callback,
-                    f"[精修][{task_prefix}] attempt={attempt} model={image_model} timeout={int(timeout_seconds)}s",
-                )
-
-                # 步骤 1：上传原始图片到 Evolink 文件服务
-                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-                ref_image_url = await generation_utils.upload_image_to_evolink(
-                    image_b64,
-                    media_type=normalized_mime_type,
-                )
-                try:
-                    print(f"[精修] attempt={attempt}, uploaded_ref={safe_log_text(ref_image_url[:80])}...")
-                except Exception:
-                    pass
-
-                # 步骤 2：图像生成 API（传入参考图 URL）
-                result = await asyncio.wait_for(
-                    generation_utils.evolink_provider.generate_image(
-                        model_name=image_model,
-                        prompt=edit_prompt,
-                        aspect_ratio=aspect_ratio,
-                        quality=image_size,
-                        image_urls=[ref_image_url],
-                        max_attempts=1,
-                        retry_delay=3,
-                    ),
-                    timeout=timeout_seconds,
-                )
-
-                if result and result[0] and result[0] != "Error":
-                    edited_image_data = base64.b64decode(result[0])
-                    emit_refine_status(
-                        status_callback,
-                        f"[精修][{task_prefix}] success on attempt={attempt} model={image_model}",
-                    )
-                    return edited_image_data, f"✅ 图像精修成功！（第 {attempt} 次尝试）"
-
-                raise RuntimeError("Evolink 未返回有效图像数据")
-
-        except asyncio.TimeoutError:
-            err_text = (
-                f"{provider} request timed out after {int(timeout_seconds)}s "
-                f"(attempt={attempt}, {task_prefix})"
-            )
-            delay = min(max(sleep_seconds, 3.0), 20.0)
-            emit_refine_status(
-                status_callback,
-                f"[精修][{task_prefix}] timeout, wait {delay:.1f}s then retry",
-            )
-            try:
-                print(f"[精修][重试] {safe_log_text(err_text, max_len=1200)}")
-            except Exception:
-                pass
-            await asyncio.sleep(delay)
-            sleep_seconds = min(max(delay * 1.2, sleep_seconds * 1.25), 30.0)
-        except Exception as e:
-            # 不向前端抛错，持续重试直到成功
-            error_text = safe_log_text(e, max_len=2000)
-            lower_error = error_text.lower()
-
-            # Windows 套接字异常自愈：重建 client/provider 后继续。
-            if "winerror 10038" in lower_error:
-                try:
-                    initialize_provider_runtime(runtime_settings)
-                except Exception as reinit_error:
-                    try:
-                        print(f"[精修][WARN] socket 自愈重建失败: {safe_log_text(reinit_error)}")
-                    except Exception:
-                        pass
-
-            suggested_delay = extract_retry_delay_seconds(error_text)
-            delay = min(sleep_seconds, 20.0)
-            if suggested_delay is not None:
-                delay = min(max(delay, suggested_delay), 60.0)
-            if "limit: 0" in lower_error:
-                delay = max(delay, 30.0)
-            emit_refine_status(
-                status_callback,
-                f"[精修][{task_prefix}] failed attempt={attempt}, wait {delay:.1f}s | {error_text[:160]}",
-            )
-            try:
-                print(f"[精修][重试] attempt={attempt}, err={error_text}")
-            except Exception:
-                pass
-            await asyncio.sleep(delay)
-            sleep_seconds = min(max(delay * 1.1, sleep_seconds * 1.25), 30.0)
-
-    elapsed = time.perf_counter() - started_at
-    if cancel_check and cancel_check():
+        failure_message = (
+            f"❌ 图像精修失败：已达到重试上限（attempts={attempt_limit}, elapsed={elapsed:.1f}s）"
+        )
         emit_refine_status(
             status_callback,
-            f"[精修][{task_prefix}] cancelled after {elapsed:.1f}s",
+            f"[精修][{task_prefix}] exhausted attempts={attempt_limit} elapsed={elapsed:.1f}s",
         )
-        return None, "⛔ 已取消精修任务"
-    failure_message = (
-        f"❌ 图像精修失败：已达到重试上限（attempts={attempt_limit}, elapsed={elapsed:.1f}s）"
-    )
-    emit_refine_status(
-        status_callback,
-        f"[精修][{task_prefix}] exhausted attempts={attempt_limit} elapsed={elapsed:.1f}s",
-    )
-    return None, failure_message
+        return None, failure_message
+    finally:
+        if owns_runtime_context:
+            await generation_utils.close_runtime_context(active_runtime_context)
 
 
 async def refine_images_with_count(
@@ -749,66 +763,72 @@ async def refine_images_with_count(
         base_dir=REPO_ROOT,
         model_config_data=model_config_data,
     )
-
-    # 每次精修批次只初始化一次 Provider/Client，避免并发重建导致底层连接异常。
-    initialize_provider_runtime(runtime_settings)
+    runtime_context = build_runtime_context(
+        runtime_settings,
+        status_hook=status_callback,
+    )
     semaphore = asyncio.Semaphore(min(safe_count, 3 if provider == "gemini" else 2))
 
-    for idx in range(safe_count):
-        variant_prompt = (
-            f"{edit_prompt}\n\n"
-            f"[Variant Request #{idx + 1}] Keep the semantics unchanged, "
-            f"but provide a distinct visual variant."
-        )
-        async def run_one(task_idx=idx, prompt_text=variant_prompt):
-            async with semaphore:
+    try:
+        with generation_utils.use_runtime_context(runtime_context):
+            for idx in range(safe_count):
+                variant_prompt = (
+                    f"{edit_prompt}\n\n"
+                    f"[Variant Request #{idx + 1}] Keep the semantics unchanged, "
+                    f"but provide a distinct visual variant."
+                )
+                async def run_one(task_idx=idx, prompt_text=variant_prompt):
+                    async with semaphore:
+                        if cancel_check and cancel_check():
+                            return task_idx, (None, "⛔ 已取消精修任务")
+                        try:
+                            value = await refine_image_with_nanoviz(
+                                image_bytes=image_bytes,
+                                edit_prompt=prompt_text,
+                                aspect_ratio=aspect_ratio,
+                                image_size=image_size,
+                                api_key=runtime_settings.api_key,
+                                provider=runtime_settings.provider,
+                                image_model_name=runtime_settings.image_model_name,
+                                task_id=task_idx + 1,
+                                status_callback=status_callback,
+                                input_mime_type=input_mime_type,
+                                cancel_check=cancel_check,
+                                runtime_context=runtime_context,
+                            )
+                            return task_idx, value
+                        except asyncio.CancelledError:
+                            return task_idx, (None, "⛔ 已取消精修任务")
+
+                task = asyncio.create_task(run_one())
+                tasks.append(task)
+
+            done_count = 0
+            for future in asyncio.as_completed(tasks):
                 if cancel_check and cancel_check():
-                    return task_idx, (None, "⛔ 已取消精修任务")
-                try:
-                    value = await refine_image_with_nanoviz(
-                        image_bytes=image_bytes,
-                        edit_prompt=prompt_text,
-                        aspect_ratio=aspect_ratio,
-                        image_size=image_size,
-                        api_key=runtime_settings.api_key,
-                        provider=runtime_settings.provider,
-                        image_model_name=runtime_settings.image_model_name,
-                        task_id=task_idx + 1,
-                        status_callback=status_callback,
-                        input_mime_type=input_mime_type,
-                        cancel_check=cancel_check,
-                    )
-                    return task_idx, value
-                except asyncio.CancelledError:
-                    return task_idx, (None, "⛔ 已取消精修任务")
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    break
+                task_idx, value = await future
+                results[task_idx] = value
+                done_count += 1
+                if progress_callback:
+                    try:
+                        progress_callback(done_count, safe_count)
+                    except Exception as cb_error:
+                        try:
+                            print(f"[DEBUG] [WARN] 精修进度回调失败: {safe_log_text(cb_error)}")
+                        except Exception:
+                            pass
+                emit_refine_status(
+                    status_callback,
+                    f"[精修] completed {done_count}/{safe_count} (task#{task_idx + 1})",
+                )
 
-        task = asyncio.create_task(run_one())
-        tasks.append(task)
-
-    done_count = 0
-    for future in asyncio.as_completed(tasks):
-        if cancel_check and cancel_check():
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            break
-        task_idx, value = await future
-        results[task_idx] = value
-        done_count += 1
-        if progress_callback:
-            try:
-                progress_callback(done_count, safe_count)
-            except Exception as cb_error:
-                try:
-                    print(f"[DEBUG] [WARN] 精修进度回调失败: {safe_log_text(cb_error)}")
-                except Exception:
-                    pass
-        emit_refine_status(
-            status_callback,
-            f"[精修] completed {done_count}/{safe_count} (task#{task_idx + 1})",
-        )
-
-    return results
+            return results
+    finally:
+        await generation_utils.close_runtime_context(runtime_context)
 
 
 def start_refine_background_job(

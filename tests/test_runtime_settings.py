@@ -1,8 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from utils.runtime_settings import (
+    RuntimeSettings,
+    build_runtime_context,
     build_provider_ui_defaults,
     resolve_runtime_settings,
 )
@@ -52,6 +55,25 @@ class RuntimeSettingsTest(unittest.TestCase):
             self.assertEqual(defaults["model_name"], "evolink-text")
             self.assertEqual(defaults["image_model_name"], "evolink-image")
             self.assertEqual(defaults["api_key_default"], "yaml-evolink-key")
+
+    def test_build_runtime_context_delegates_to_generation_utils(self):
+        settings = RuntimeSettings(
+            provider="gemini",
+            api_key="runtime-key",
+            model_name="text-model",
+            image_model_name="image-model",
+        )
+        hook = lambda message: message
+
+        with patch("utils.generation_utils.create_runtime_context", return_value={"ok": True}) as mocked_create:
+            context = build_runtime_context(settings, status_hook=hook)
+
+        self.assertEqual(context, {"ok": True})
+        mocked_create.assert_called_once_with(
+            provider="gemini",
+            api_key="runtime-key",
+            status_hook=hook,
+        )
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ from utils.config_loader import (
 from utils.demo_task_utils import create_sample_inputs
 from utils.result_bundle import build_run_manifest, write_result_bundle
 from utils.run_report import build_failure_manifest, build_result_summary
-from utils.runtime_settings import initialize_provider_runtime, resolve_runtime_settings
+from utils.runtime_settings import build_runtime_context, resolve_runtime_settings
 
 
 SMOKE_INPUTS = {
@@ -82,8 +82,6 @@ async def run_smoke_once(args) -> tuple[list[dict], dict, list[dict], Path]:
 
     model_name = runtime_settings.model_name
     image_model_name = runtime_settings.image_model_name
-    initialize_provider_runtime(runtime_settings)
-
     sample = SMOKE_INPUTS[args.task_name]
     data_list = create_sample_inputs(
         content=sample["content"],
@@ -120,13 +118,19 @@ async def run_smoke_once(args) -> tuple[list[dict], dict, list[dict], Path]:
         polish_agent=PolishAgent(exp_config=exp_config),
     )
 
+    runtime_context = build_runtime_context(runtime_settings)
     results = []
-    async for result in processor.process_queries_batch(
-        data_list,
-        max_concurrent=1,
-        do_eval=False,
-    ):
-        results.append(result)
+    try:
+        with generation_utils.use_runtime_context(runtime_context):
+            async for result in processor.process_queries_batch(
+                data_list,
+                max_concurrent=1,
+                do_eval=False,
+            ):
+                results.append(result)
+    finally:
+        await generation_utils.close_runtime_context(runtime_context)
+        processor.shutdown()
 
     summary = build_result_summary(results)
     failures = build_failure_manifest(results)
@@ -149,9 +153,6 @@ async def run_smoke_once(args) -> tuple[list[dict], dict, list[dict], Path]:
         summary=summary,
         failures=failures,
     )
-
-    if generation_utils.evolink_provider and hasattr(generation_utils.evolink_provider, "close"):
-        await generation_utils.evolink_provider.close()
 
     return results, summary, failures, output_path
 

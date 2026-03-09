@@ -133,6 +133,16 @@
   - validated on 2026-03-10 with:
     - `C:\Users\86166\AppData\Roaming\uv\tools\paperbanana\Scripts\python.exe -m compileall docs main.py demo.py agents utils visualize scripts tests`
     - `C:\Users\86166\AppData\Roaming\uv\tools\paperbanana\Scripts\python.exe -m unittest discover -s tests -p 'test_*.py'` (`49` tests passed)
+- 2026-03-10 Completed in Wave 10:
+  - added `RuntimeContext` plus `use_runtime_context()` / `close_runtime_context()` in `utils/generation_utils.py`, so provider clients and runtime status hooks can be scoped per run instead of living only in module-level globals
+  - refactored Gemini / Evolink / Anthropic / OpenAI call helpers to resolve clients from the active runtime context first, while keeping the default global context as a backward-compatible fallback
+  - added `build_runtime_context()` in `utils/runtime_settings.py` and updated CLI, Streamlit generation, Streamlit refine jobs, and live smoke runs to create isolated per-run runtime contexts
+  - isolated refine execution from generation execution in `demo.py`, including runtime-context reuse across concurrent refine variants and targeted runtime reinitialization for recoverable socket failures
+  - added `PaperVizProcessor.shutdown()` and wired CLI/demo/smoke `finally` blocks to close both provider runtime resources and agent-owned resources in one place
+  - added focused tests for concurrent runtime-context isolation, owned-vs-unowned provider cleanup, runtime-context builder wiring, and processor shutdown behavior
+  - validated on 2026-03-10 with:
+    - `C:\Users\86166\AppData\Roaming\uv\tools\paperbanana\Scripts\python.exe -m compileall docs main.py demo.py agents utils visualize scripts tests`
+    - `C:\Users\86166\AppData\Roaming\uv\tools\paperbanana\Scripts\python.exe -m unittest discover -s tests -p 'test_*.py'` (`54` tests passed)
 
 - 2026-03-09 Deferred detail:
   - refine cancellation is cooperative: it can stop future retries and pending variants, but it cannot interrupt a single provider request already in flight.

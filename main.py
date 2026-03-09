@@ -34,6 +34,7 @@ from utils.result_bundle import (
 )
 from utils.result_order import sort_results_stably
 from utils.run_report import build_failure_manifest, build_result_summary
+from utils.runtime_settings import build_runtime_context
 setup_logging("INFO")
 
 from agents import (
@@ -41,7 +42,7 @@ from agents import (
     StylistAgent, CriticAgent, RetrieverAgent, PolishAgent
 )
 
-from utils import config, paperviz_processor
+from utils import config, generation_utils, paperviz_processor
 
 logger = get_logger("Main")
 
@@ -232,19 +233,25 @@ async def main():
 
     # Process samples incrementally
     idx = 0
-    async for result_data in processor.process_queries_batch(
-        data_list, max_concurrent=concurrent_num
-    ):
-        all_result_list.append(result_data)
-        idx += 1
-        if isinstance(result_data, dict) and result_data.get("status") == "failed":
-            failed_count += 1
-        if idx % 5 == 0 or idx == len(data_list):
-            logger.info(
-                f"📈 进度: {idx}/{len(data_list)} | 失败 {failed_count} | 成功 {idx - failed_count}"
-            )
-        if idx % 10 == 0:
-            await save_results_and_scores(all_result_list)
+    runtime_context = build_runtime_context(exp_config.runtime_settings)
+    try:
+        with generation_utils.use_runtime_context(runtime_context):
+            async for result_data in processor.process_queries_batch(
+                data_list, max_concurrent=concurrent_num
+            ):
+                all_result_list.append(result_data)
+                idx += 1
+                if isinstance(result_data, dict) and result_data.get("status") == "failed":
+                    failed_count += 1
+                if idx % 5 == 0 or idx == len(data_list):
+                    logger.info(
+                        f"📈 进度: {idx}/{len(data_list)} | 失败 {failed_count} | 成功 {idx - failed_count}"
+                    )
+                if idx % 10 == 0:
+                    await save_results_and_scores(all_result_list)
+    finally:
+        await generation_utils.close_runtime_context(runtime_context)
+        processor.shutdown()
 
     # Final save
     await save_results_and_scores(all_result_list)

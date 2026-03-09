@@ -122,13 +122,24 @@ def build_all_provider_ui_defaults(
 
 
 def initialize_provider_runtime(settings: RuntimeSettings) -> None:
-    """Initialize the selected provider client when an explicit key is available."""
-    if not settings.api_key:
-        return
-
+    """Initialize the default runtime context for compatibility paths."""
     from utils import generation_utils
 
-    if settings.provider == "evolink":
-        generation_utils.init_evolink_provider(settings.api_key)
-    elif settings.provider == "gemini":
-        generation_utils.init_gemini_client(settings.api_key)
+    generation_utils.set_default_runtime_context(
+        build_runtime_context(settings)
+    )
+
+
+def build_runtime_context(
+    settings: RuntimeSettings,
+    *,
+    status_hook=None,
+):
+    """Build an isolated runtime context for one run/session."""
+    from utils import generation_utils
+
+    return generation_utils.create_runtime_context(
+        provider=settings.provider,
+        api_key=settings.api_key,
+        status_hook=status_hook,
+    )

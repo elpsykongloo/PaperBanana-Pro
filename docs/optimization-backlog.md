@@ -31,10 +31,10 @@
   - [x] attach richer pipeline metadata (`pipeline_spec`, final-stage hints) to produced results
   - [x] remove hard-coded `demo_full` / planner-vs-stylist assumptions from final-stage resolution and stage timelines
   - [x] make viewers render stage labels and auto mode selection from registry metadata instead of guesswork
-- [ ] Phase 10: Runtime isolation
-  - [ ] replace module-level provider/client/hook globals with per-run runtime context objects
-  - [ ] isolate generation runtime from refine runtime so concurrent sessions do not stomp each other
-  - [ ] centralize agent/provider shutdown and resource cleanup
+- [x] Phase 10: Runtime isolation
+  - [x] replace module-level provider/client/hook globals with per-run runtime context objects
+  - [x] isolate generation runtime from refine runtime so concurrent sessions do not stomp each other
+  - [x] centralize agent/provider shutdown and resource cleanup
 - [ ] Phase 11: Product-loop closure
   - [ ] move candidate generation onto background jobs with cancel / status / resume semantics
   - [ ] add candidate-to-refine and plot-code-to-rerender entry points in the demo

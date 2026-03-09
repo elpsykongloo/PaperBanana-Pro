@@ -64,6 +64,25 @@ class PaperVizProcessor:
         self.retriever_agent = retriever_agent
         self.polish_agent = polish_agent
 
+    def shutdown(self) -> None:
+        """Release agent-owned resources for this processor instance."""
+        for agent in (
+            self.vanilla_agent,
+            self.planner_agent,
+            self.visualizer_agent,
+            self.stylist_agent,
+            self.critic_agent,
+            self.retriever_agent,
+            self.polish_agent,
+        ):
+            shutdown = getattr(agent, "shutdown", None)
+            if shutdown is None:
+                continue
+            try:
+                shutdown()
+            except Exception as err:
+                logger.warning("⚠️  关闭 %s 资源失败: %s", agent.__class__.__name__, err)
+
     @staticmethod
     def _format_stage_sequence(spec: PipelineSpec, max_rounds: int) -> str:
         labels = {

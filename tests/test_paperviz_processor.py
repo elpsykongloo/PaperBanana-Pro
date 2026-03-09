@@ -12,9 +12,13 @@ from utils.pipeline_state import PipelineState
 class _PassthroughAgent:
     def __init__(self, exp_config):
         self.exp_config = exp_config
+        self.shutdown_calls = 0
 
     async def process(self, data, **kwargs):
         return data
+
+    def shutdown(self):
+        self.shutdown_calls += 1
 
 
 class _PlannerAgent(_PassthroughAgent):
@@ -165,6 +169,19 @@ class PaperVizProcessorRegistryTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in results], ["test_0", "test_1", "test_2"])
         self.assertEqual([item["input_index"] for item in results], [0, 1, 2])
         self.assertEqual([item["candidate_id"] for item in results], [0, 1, 2])
+
+    def test_shutdown_closes_agent_resources_when_supported(self):
+        processor = self._build_processor("dev_planner")
+
+        processor.shutdown()
+
+        self.assertEqual(processor.vanilla_agent.shutdown_calls, 1)
+        self.assertEqual(processor.planner_agent.shutdown_calls, 1)
+        self.assertEqual(processor.visualizer_agent.shutdown_calls, 1)
+        self.assertEqual(processor.stylist_agent.shutdown_calls, 1)
+        self.assertEqual(processor.critic_agent.shutdown_calls, 1)
+        self.assertEqual(processor.retriever_agent.shutdown_calls, 1)
+        self.assertEqual(processor.polish_agent.shutdown_calls, 1)
 
 
 if __name__ == "__main__":

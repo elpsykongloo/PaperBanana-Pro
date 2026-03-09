@@ -20,6 +20,9 @@ import json
 import asyncio
 import base64
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from io import BytesIO
 from functools import partial
 from ast import literal_eval
@@ -47,11 +50,196 @@ runtime_status_hook: Optional[Callable[[str], None]] = None
 
 DEFAULT_GEMINI_IMAGE_FALLBACK_MODEL = "gemini-3.1-flash-image-preview"
 
+evolink_base_url = get_config_val(
+    model_config,
+    "evolink",
+    "base_url",
+    "EVOLINK_BASE_URL",
+    "https://api.evolink.ai",
+    base_dir=REPO_ROOT,
+)
+
+
+@dataclass
+class RuntimeContext:
+    provider: str = ""
+    api_key: str = ""
+    base_url: str = ""
+    status_hook: Optional[Callable[[str], None]] = None
+    gemini_client: Any = None
+    anthropic_client: Any = None
+    openai_client: Any = None
+    evolink_provider: Any = None
+    owns_evolink_provider: bool = False
+
+
+_active_runtime_context: ContextVar[RuntimeContext | None] = ContextVar(
+    "paperbanana_runtime_context",
+    default=None,
+)
+_default_runtime_context: RuntimeContext | None = None
+
+
+def _sync_legacy_runtime_globals_from_default() -> None:
+    global evolink_provider, gemini_client, anthropic_client, openai_client
+    context = _default_runtime_context
+    evolink_provider = context.evolink_provider if context else None
+    gemini_client = context.gemini_client if context else None
+    anthropic_client = context.anthropic_client if context else None
+    openai_client = context.openai_client if context else None
+
+
+def _create_evolink_provider(api_key: str, base_url: str = ""):
+    if not api_key:
+        return None
+    try:
+        from providers.evolink import EvolinkProvider
+    except ImportError:
+        logger.warning("⚠️  未安装 providers.evolink，Evolink Provider 不可用")
+        return None
+    url = base_url or evolink_base_url
+    return EvolinkProvider(api_key=api_key, base_url=url)
+
+
+def _create_gemini_client(api_key: str):
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        return genai.Client(api_key=api_key)
+    except ImportError:
+        logger.warning("⚠️  未安装 google-genai，Gemini Client 不可用。请运行 pip install google-genai")
+        return None
+
+
+def _create_anthropic_client(api_key: str):
+    if not api_key:
+        return None
+    try:
+        from anthropic import AsyncAnthropic
+        return AsyncAnthropic(api_key=api_key)
+    except ImportError:
+        logger.warning("⚠️  未安装 anthropic，Anthropic Client 不可用")
+        return None
+
+
+def _create_openai_client(api_key: str):
+    if not api_key:
+        return None
+    try:
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(api_key=api_key)
+    except ImportError:
+        logger.warning("⚠️  未安装 openai，OpenAI Client 不可用")
+        return None
+
+
+def get_default_runtime_context() -> RuntimeContext | None:
+    return _default_runtime_context
+
+
+def set_default_runtime_context(context: RuntimeContext | None) -> RuntimeContext | None:
+    global _default_runtime_context
+    _default_runtime_context = context
+    _sync_legacy_runtime_globals_from_default()
+    return _default_runtime_context
+
+
+def get_active_runtime_context() -> RuntimeContext | None:
+    return _active_runtime_context.get() or _default_runtime_context
+
+
+def get_evolink_provider():
+    context = get_active_runtime_context()
+    return context.evolink_provider if context else None
+
+
+def get_gemini_client():
+    context = get_active_runtime_context()
+    return context.gemini_client if context else None
+
+
+def get_anthropic_client():
+    context = get_active_runtime_context()
+    return context.anthropic_client if context else None
+
+
+def get_openai_client():
+    context = get_active_runtime_context()
+    return context.openai_client if context else None
+
+
+def create_runtime_context(
+    *,
+    provider: str = "",
+    api_key: str = "",
+    status_hook: Optional[Callable[[str], None]] = None,
+    base_url: str = "",
+) -> RuntimeContext:
+    normalized_provider = str(provider or "").strip().lower()
+    resolved_base_url = base_url or evolink_base_url
+    context = RuntimeContext(
+        provider=normalized_provider,
+        api_key=str(api_key or "").strip(),
+        base_url=resolved_base_url,
+        status_hook=status_hook,
+    )
+
+    if normalized_provider == "evolink" and context.api_key:
+        context.evolink_provider = _create_evolink_provider(context.api_key, resolved_base_url)
+        context.owns_evolink_provider = context.evolink_provider is not None
+    elif normalized_provider == "gemini" and context.api_key:
+        context.gemini_client = _create_gemini_client(context.api_key)
+    elif normalized_provider == "anthropic" and context.api_key:
+        context.anthropic_client = _create_anthropic_client(context.api_key)
+    elif normalized_provider == "openai" and context.api_key:
+        context.openai_client = _create_openai_client(context.api_key)
+
+    return context
+
+
+@contextmanager
+def use_runtime_context(context: RuntimeContext | None):
+    token = _active_runtime_context.set(context)
+    try:
+        yield context
+    finally:
+        _active_runtime_context.reset(token)
+
+
+async def close_runtime_context(context: RuntimeContext | None) -> None:
+    if context is None:
+        return
+    provider = context.evolink_provider
+    if context.owns_evolink_provider and provider is not None and hasattr(provider, "close"):
+        try:
+            await provider.close()
+        except Exception as err:
+            _safe_log(f"[DEBUG] [WARN] close_runtime_context 失败: {err}")
+
+
+def reinitialize_runtime_context(context: RuntimeContext | None) -> RuntimeContext | None:
+    if context is None:
+        return None
+    if context.provider == "evolink" and context.api_key:
+        context.evolink_provider = _create_evolink_provider(context.api_key, context.base_url)
+        context.owns_evolink_provider = context.evolink_provider is not None
+    elif context.provider == "gemini" and context.api_key:
+        context.gemini_client = _create_gemini_client(context.api_key)
+    elif context.provider == "anthropic" and context.api_key:
+        context.anthropic_client = _create_anthropic_client(context.api_key)
+    elif context.provider == "openai" and context.api_key:
+        context.openai_client = _create_openai_client(context.api_key)
+    return context
+
 
 def set_runtime_status_hook(hook: Optional[Callable[[str], None]]) -> None:
     """设置运行时状态回调。"""
     global runtime_status_hook
     runtime_status_hook = hook
+    context = _active_runtime_context.get() or _default_runtime_context
+    if context is not None:
+        context.status_hook = hook
 
 
 def _safe_text_for_log(value: Any, max_len: int = 6000) -> str:
@@ -80,16 +268,18 @@ def _safe_log(message: Any) -> None:
 
 def _emit_runtime_status(message: str) -> None:
     """发送运行时状态（失败不影响主流程）。"""
-    if runtime_status_hook is None:
+    hook = runtime_status_hook
+    context = get_active_runtime_context()
+    if context is not None and context.status_hook is not None:
+        hook = context.status_hook
+    if hook is None:
         return
     try:
-        runtime_status_hook(message)
+        hook(message)
     except Exception as err:
         _safe_log(f"[DEBUG] [WARN] runtime_status_hook 调用失败: {err}")
 
-# ==================== Evolink Provider 初始化 ====================
-
-evolink_provider = None
+# ==================== 原始 Provider 初始化（保留兼容性） ====================
 
 evolink_api_key = get_config_val(
     model_config,
@@ -99,37 +289,68 @@ evolink_api_key = get_config_val(
     "",
     base_dir=REPO_ROOT,
 )
-evolink_base_url = get_config_val(
+gemini_api_key = get_config_val(
     model_config,
-    "evolink",
-    "base_url",
-    "EVOLINK_BASE_URL",
-    "https://api.evolink.ai",
+    "api_keys",
+    "google_api_key",
+    "GOOGLE_API_KEY",
+    "",
+    base_dir=REPO_ROOT,
+)
+anthropic_api_key = get_config_val(
+    model_config,
+    "api_keys",
+    "anthropic_api_key",
+    "ANTHROPIC_API_KEY",
+    "",
+    base_dir=REPO_ROOT,
+)
+openai_api_key = get_config_val(
+    model_config,
+    "api_keys",
+    "openai_api_key",
+    "OPENAI_API_KEY",
+    "",
     base_dir=REPO_ROOT,
 )
 
-if evolink_api_key:
-    try:
-        from providers.evolink import EvolinkProvider
-        evolink_provider = EvolinkProvider(api_key=evolink_api_key, base_url=evolink_base_url)
-        logger.info(f"✅ 已初始化 Evolink Provider (base_url={evolink_base_url})")
-    except ImportError:
-        logger.warning("⚠️  未安装 providers.evolink，Evolink Provider 不可用")
+set_default_runtime_context(
+    RuntimeContext(
+        provider="",
+        api_key="",
+        base_url=evolink_base_url,
+        status_hook=runtime_status_hook,
+        gemini_client=_create_gemini_client(gemini_api_key),
+        anthropic_client=_create_anthropic_client(anthropic_api_key),
+        openai_client=_create_openai_client(openai_api_key),
+        evolink_provider=_create_evolink_provider(evolink_api_key, evolink_base_url),
+        owns_evolink_provider=bool(evolink_api_key),
+    )
+)
+
+if get_default_runtime_context() and get_default_runtime_context().evolink_provider:
+    logger.info(f"✅ 已初始化 Evolink Provider (base_url={evolink_base_url})")
 else:
     logger.debug("未配置 Evolink API Key；仅当选择 evolink provider 时才会影响运行。")
+if get_default_runtime_context() and get_default_runtime_context().gemini_client:
+    logger.info("✅ 已初始化 Gemini Client")
+if get_default_runtime_context() and get_default_runtime_context().anthropic_client:
+    logger.info("✅ 已初始化 Anthropic Client")
+if get_default_runtime_context() and get_default_runtime_context().openai_client:
+    logger.info("✅ 已初始化 OpenAI Client")
 
 
 def _cleanup_evolink_provider():
-    """Shut down Evolink provider session on process exit."""
-    global evolink_provider
-    if evolink_provider is not None:
+    """Shut down default Evolink provider session on process exit."""
+    provider = get_default_runtime_context().evolink_provider if get_default_runtime_context() else None
+    if provider is not None:
         import asyncio
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(evolink_provider.close())
+                loop.create_task(provider.close())
             else:
-                loop.run_until_complete(evolink_provider.close())
+                loop.run_until_complete(provider.close())
         except Exception:
             pass
 
@@ -139,83 +360,30 @@ atexit.register(_cleanup_evolink_provider)
 
 
 def init_evolink_provider(api_key: str, base_url: str = ""):
-    """用指定的 API Key 初始化或更新 Evolink Provider（供界面动态传入）。"""
-    global evolink_provider
+    """用指定的 API Key 初始化或更新默认 Evolink Provider（保留兼容性）。"""
     if not api_key:
         return
-    url = base_url or evolink_base_url
-    from providers.evolink import EvolinkProvider
-    evolink_provider = EvolinkProvider(api_key=api_key, base_url=url)
-    logger.info(f"✅ 已通过界面初始化 Evolink Provider (base_url={url})")
+    context = get_default_runtime_context() or RuntimeContext()
+    context.provider = "evolink"
+    context.api_key = api_key
+    context.base_url = base_url or evolink_base_url
+    context.evolink_provider = _create_evolink_provider(api_key, context.base_url)
+    context.owns_evolink_provider = context.evolink_provider is not None
+    set_default_runtime_context(context)
+    logger.info(f"✅ 已通过界面初始化 Evolink Provider (base_url={context.base_url})")
 
 
 def init_gemini_client(api_key: str):
-    """用指定的 API Key 初始化或更新 Gemini Client（供界面动态传入）。"""
-    global gemini_client
+    """用指定的 API Key 初始化或更新默认 Gemini Client（保留兼容性）。"""
     if not api_key:
         return
-    try:
-        from google import genai
-        gemini_client = genai.Client(api_key=api_key)
+    context = get_default_runtime_context() or RuntimeContext()
+    context.provider = "gemini"
+    context.api_key = api_key
+    context.gemini_client = _create_gemini_client(api_key)
+    set_default_runtime_context(context)
+    if context.gemini_client is not None:
         logger.info("✅ 已通过界面初始化 Gemini Client")
-    except ImportError:
-        logger.warning("⚠️  未安装 google-genai，Gemini Client 不可用。请运行 pip install google-genai")
-
-
-# ==================== 原始 Provider 初始化（保留兼容性） ====================
-
-gemini_client = None
-anthropic_client = None
-openai_client = None
-
-api_key = get_config_val(
-    model_config,
-    "api_keys",
-    "google_api_key",
-    "GOOGLE_API_KEY",
-    "",
-    base_dir=REPO_ROOT,
-)
-if api_key:
-    try:
-        from google import genai
-        from google.genai import types
-        gemini_client = genai.Client(api_key=api_key)
-        logger.info("✅ 已初始化 Gemini Client")
-    except ImportError:
-        logger.warning("⚠️  未安装 google-genai，Gemini Client 不可用")
-
-anthropic_api_key = get_config_val(
-    model_config,
-    "api_keys",
-    "anthropic_api_key",
-    "ANTHROPIC_API_KEY",
-    "",
-    base_dir=REPO_ROOT,
-)
-if anthropic_api_key:
-    try:
-        from anthropic import AsyncAnthropic
-        anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
-        logger.info("✅ 已初始化 Anthropic Client")
-    except ImportError:
-        logger.warning("⚠️  未安装 anthropic，Anthropic Client 不可用")
-
-openai_api_key = get_config_val(
-    model_config,
-    "api_keys",
-    "openai_api_key",
-    "OPENAI_API_KEY",
-    "",
-    base_dir=REPO_ROOT,
-)
-if openai_api_key:
-    try:
-        from openai import AsyncOpenAI
-        openai_client = AsyncOpenAI(api_key=openai_api_key)
-        logger.info("✅ 已初始化 OpenAI Client")
-    except ImportError:
-        logger.warning("⚠️  未安装 openai，OpenAI Client 不可用")
 
 
 # ==================== Evolink 调用函数 ====================
@@ -234,8 +402,9 @@ async def call_evolink_text_with_retry_async(
         retry_delay: 重试间隔
         error_context: 错误上下文
     """
-    logger.debug(f"📤 call_evolink_text: model={model_name}, provider={'已初始化' if evolink_provider else '未初始化'}")
-    if evolink_provider is None:
+    provider = get_evolink_provider()
+    logger.debug(f"📤 call_evolink_text: model={model_name}, provider={'已初始化' if provider else '未初始化'}")
+    if provider is None:
         raise RuntimeError("Evolink Provider 未初始化，请检查 EVOLINK_API_KEY 配置。")
 
     # 从 config 中提取参数（兼容 types.GenerateContentConfig 和 dict）
@@ -255,7 +424,7 @@ async def call_evolink_text_with_retry_async(
         max_output_tokens = 50000
         logger.debug(f"📋 call_evolink_text: 使用默认参数, config type={type(config)}")
 
-    return await evolink_provider.generate_text(
+    return await provider.generate_text(
         model_name=model_name,
         contents=contents,
         system_prompt=system_prompt,
@@ -274,9 +443,10 @@ async def upload_image_to_evolink(image_b64: str, media_type: str = "image/jpeg"
     用于 image-to-image 场景（如 Polish Agent），需要先把本地 base64 图片
     上传为 URL，才能传给图像生成 API 的 image_urls 参数。
     """
-    if evolink_provider is None:
+    provider = get_evolink_provider()
+    if provider is None:
         raise RuntimeError("Evolink Provider 未初始化，请检查 EVOLINK_API_KEY 配置。")
-    url = await evolink_provider.upload_image_base64(image_b64, media_type)
+    url = await provider.upload_image_base64(image_b64, media_type)
     if not url:
         raise RuntimeError("图片上传到 Evolink 文件服务失败")
     return url
@@ -296,15 +466,16 @@ async def call_evolink_image_with_retry_async(
         retry_delay: 重试间隔
         error_context: 错误上下文
     """
-    logger.debug(f"🖼️ call_evolink_image: model={model_name}, config={config}, provider={'已初始化' if evolink_provider else '未初始化'}")
-    if evolink_provider is None:
+    provider = get_evolink_provider()
+    logger.debug(f"🖼️ call_evolink_image: model={model_name}, config={config}, provider={'已初始化' if provider else '未初始化'}")
+    if provider is None:
         raise RuntimeError("Evolink Provider 未初始化，请检查 EVOLINK_API_KEY 配置。")
 
     aspect_ratio = config.get("aspect_ratio", "16:9")
     quality = config.get("quality", "2K")
     image_urls = config.get("image_urls", None)
 
-    return await evolink_provider.generate_image(
+    return await provider.generate_image(
         model_name=model_name,
         prompt=prompt,
         aspect_ratio=aspect_ratio,
@@ -527,7 +698,7 @@ async def call_gemini_with_retry_async(
     image_fallback_max_attempts: int = 5,
 ):
     """原始 Gemini API 异步调用（保留兼容性）"""
-    if gemini_client is None:
+    if get_gemini_client() is None:
         raise RuntimeError("Gemini Client 未初始化，请检查 Google API Key。")
 
     result_list: List[str] = []
@@ -551,7 +722,9 @@ async def call_gemini_with_retry_async(
 
         for attempt_idx in range(stage_attempts):
             try:
-                client = gemini_client
+                client = get_gemini_client()
+                if client is None:
+                    raise RuntimeError("Gemini Client 未初始化，请检查 Google API Key。")
                 gemini_contents = _convert_to_gemini_parts(current_contents)
                 context_msg = f" ({error_context})" if error_context else ""
                 _emit_runtime_status(
@@ -734,6 +907,9 @@ async def call_claude_with_retry_async(
     model_name, contents, config, max_attempts=5, retry_delay=30, error_context=""
 ):
     """原始 Claude API 异步调用（保留兼容性）"""
+    client = get_anthropic_client()
+    if client is None:
+        raise RuntimeError("Anthropic Client 未初始化，请检查 ANTHROPIC_API_KEY。")
     system_prompt = config["system_prompt"]
     temperature = config["temperature"]
     candidate_num = config["candidate_num"]
@@ -745,7 +921,7 @@ async def call_claude_with_retry_async(
     for attempt in range(max_attempts):
         try:
             claude_contents = _convert_to_claude_format(current_contents)
-            first_response = await anthropic_client.messages.create(
+            first_response = await client.messages.create(
                 model=model_name,
                 max_tokens=max_output_tokens,
                 temperature=temperature,
@@ -770,7 +946,7 @@ async def call_claude_with_retry_async(
     if remaining_candidates > 0:
         valid_claude_contents = _convert_to_claude_format(current_contents)
         tasks = [
-            anthropic_client.messages.create(
+            client.messages.create(
                 model=model_name,
                 max_tokens=max_output_tokens,
                 temperature=temperature,
@@ -793,6 +969,9 @@ async def call_openai_with_retry_async(
     model_name, contents, config, max_attempts=5, retry_delay=30, error_context=""
 ):
     """原始 OpenAI API 异步调用（保留兼容性）"""
+    client = get_openai_client()
+    if client is None:
+        raise RuntimeError("OpenAI Client 未初始化，请检查 OPENAI_API_KEY。")
     system_prompt = config["system_prompt"]
     temperature = config["temperature"]
     candidate_num = config["candidate_num"]
@@ -804,7 +983,7 @@ async def call_openai_with_retry_async(
     for attempt in range(max_attempts):
         try:
             openai_contents = _convert_to_openai_format(current_contents)
-            first_response = await openai_client.chat.completions.create(
+            first_response = await client.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -831,7 +1010,7 @@ async def call_openai_with_retry_async(
     if remaining_candidates > 0:
         valid_openai_contents = _convert_to_openai_format(current_contents)
         tasks = [
-            openai_client.chat.completions.create(
+            client.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -856,6 +1035,9 @@ async def call_openai_image_generation_with_retry_async(
     model_name, prompt, config, max_attempts=5, retry_delay=30, error_context=""
 ):
     """原始 OpenAI 图像生成 API 异步调用（保留兼容性）"""
+    client = get_openai_client()
+    if client is None:
+        raise RuntimeError("OpenAI Client 未初始化，请检查 OPENAI_API_KEY。")
     size = config.get("size", "1536x1024")
     quality = config.get("quality", "high")
     background = config.get("background", "opaque")
@@ -873,7 +1055,7 @@ async def call_openai_image_generation_with_retry_async(
 
     for attempt in range(max_attempts):
         try:
-            response = await openai_client.images.generate(**gen_params)
+            response = await client.images.generate(**gen_params)
             if response.data and response.data[0].b64_json:
                 return [response.data[0].b64_json]
             else:
