@@ -4,6 +4,9 @@ import sys
 import time
 import types
 import unittest
+from io import BytesIO
+
+from PIL import Image
 
 
 if "streamlit" not in sys.modules:
@@ -13,6 +16,58 @@ if "streamlit" not in sys.modules:
     sys.modules["streamlit"] = fake_streamlit
 
 demo = importlib.import_module("demo")
+
+
+def _build_png_bytes() -> bytes:
+    image = Image.new("RGB", (8, 8), color=(12, 34, 56))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+class _DummyContextManager:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeRenderStreamlit:
+    def __init__(self):
+        self.session_state = {}
+        self.markdown_calls = []
+        self.image_calls = 0
+        self.download_calls = 0
+
+    def divider(self):
+        return None
+
+    def markdown(self, text, **kwargs):
+        self.markdown_calls.append(text)
+
+    def caption(self, *args, **kwargs):
+        return None
+
+    def warning(self, *args, **kwargs):
+        return None
+
+    def write(self, *args, **kwargs):
+        return None
+
+    def image(self, *args, **kwargs):
+        self.image_calls += 1
+
+    def download_button(self, *args, **kwargs):
+        self.download_calls += 1
+        return False
+
+    def expander(self, *args, **kwargs):
+        return _DummyContextManager()
+
+    def columns(self, spec, **kwargs):
+        count = spec if isinstance(spec, int) else len(spec)
+        return [_DummyContextManager() for _ in range(count)]
 
 
 class RefineBackgroundJobTest(unittest.TestCase):
@@ -148,6 +203,39 @@ class RefineBackgroundJobTest(unittest.TestCase):
             demo.build_runtime_context = original_build
             demo.generation_utils = original_generation_utils
             demo.refine_image_with_nanoviz = original_refine_one
+
+    def test_render_refine_results_section_renders_even_with_uploaded_source(self):
+        original_st = demo.st
+        fake_st = _FakeRenderStreamlit()
+        fake_st.session_state.update(
+            {
+                "refined_images": [
+                    {"index": 1, "bytes": _build_png_bytes()},
+                ],
+                "refine_original_image_bytes": _build_png_bytes(),
+                "refine_timestamp": "2026-03-10 03:00:00",
+            }
+        )
+
+        class _UploadedFile:
+            @staticmethod
+            def getvalue():
+                return _build_png_bytes()
+
+        demo.st = fake_st
+        try:
+            demo.render_refine_results_section(
+                uploaded_file=_UploadedFile(),
+                fallback_resolution="2K",
+                fallback_provider="gemini",
+                fallback_image_model_name="gemini-3.1-flash-image-preview",
+            )
+        finally:
+            demo.st = original_st
+
+        self.assertIn("## 🎨 精修结果", fake_st.markdown_calls)
+        self.assertGreaterEqual(fake_st.image_calls, 1)
+        self.assertGreaterEqual(fake_st.download_calls, 1)
 
 
 if __name__ == "__main__":

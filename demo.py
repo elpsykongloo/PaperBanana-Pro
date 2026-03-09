@@ -1808,6 +1808,110 @@ def render_generation_history_panel(task_name: str) -> None:
                     st.session_state.pop(key, None)
                 st.rerun()
 
+
+def render_refine_results_section(
+    *,
+    uploaded_file=None,
+    fallback_resolution: str = "2K",
+    fallback_provider: str = "gemini",
+    fallback_image_model_name: str = "",
+) -> None:
+    refined_images = st.session_state.get("refined_images", [])
+    if not refined_images:
+        return
+
+    st.divider()
+    st.markdown("## 🎨 精修结果")
+    final_resolution = st.session_state.get(
+        "refine_result_resolution",
+        fallback_resolution,
+    )
+    final_count = st.session_state.get("refine_count", len(refined_images))
+    refine_provider_used = st.session_state.get(
+        "refine_provider_used",
+        fallback_provider,
+    )
+    refine_image_model_used = st.session_state.get(
+        "refine_image_model_used",
+        fallback_image_model_name,
+    )
+    failed_refine_results = st.session_state.get("refine_failed_results", [])
+    st.caption(
+        f"生成时间：{st.session_state.get('refine_timestamp', 'N/A')} | "
+        f"分辨率：{final_resolution} | 张数：{final_count} | "
+        f"Provider：{refine_provider_used} | 模型：{refine_image_model_used}"
+    )
+    if failed_refine_results:
+        st.warning(f"有 {len(failed_refine_results)} 张精修失败。")
+        with st.expander("查看失败详情", expanded=False):
+            for item in failed_refine_results:
+                st.write(f"结果 {item['index']}: {item['message']}")
+
+    st.markdown("### 精修前")
+    original_preview_bytes = st.session_state.get(
+        "refine_original_image_bytes",
+        uploaded_file.getvalue() if uploaded_file is not None else b"",
+    )
+    if original_preview_bytes:
+        st.image(Image.open(BytesIO(original_preview_bytes)), use_container_width=True)
+
+    st.markdown(f"### 精修后（{final_resolution}）")
+
+    import zipfile
+
+    zip_buffer = BytesIO()
+    zip_name = f"refined_{final_resolution}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for item in refined_images:
+            idx = item.get("index", 0)
+            img_bytes = item.get("bytes", b"")
+            if not img_bytes:
+                continue
+            file_name = f"refined_{final_resolution}_{idx}.png"
+            zip_file.writestr(file_name, img_bytes)
+
+    # 两列网格预览，缩小占位（仅影响预览，不影响下载原图）
+    preview_cols = 2
+    preview_width_px = 420
+    for row_start in range(0, len(refined_images), preview_cols):
+        cols = st.columns(preview_cols, gap="large")
+        for col_offset in range(preview_cols):
+            item_pos = row_start + col_offset
+            if item_pos >= len(refined_images):
+                continue
+
+            item = refined_images[item_pos]
+            idx = item.get("index", item_pos + 1)
+            img_bytes = item.get("bytes", b"")
+            if not img_bytes:
+                continue
+
+            with cols[col_offset]:
+                st.markdown(f"#### 结果 {idx}")
+                refined_image = Image.open(BytesIO(img_bytes))
+                st.image(refined_image, width=preview_width_px)
+
+                file_name = f"refined_{final_resolution}_{idx}.png"
+                st.download_button(
+                    label=f"[DOWN] 下载结果 {idx}",
+                    data=img_bytes,
+                    file_name=file_name,
+                    mime="image/png",
+                    key=f"download_refined_{idx}_{final_resolution}_{item_pos}",
+                    use_container_width=True
+                )
+
+    zip_buffer.seek(0)
+    st.download_button(
+        label="[DOWN] 一键下载全部结果（ZIP）",
+        data=zip_buffer.getvalue(),
+        file_name=zip_name,
+        mime="application/zip",
+        use_container_width=True,
+        key="download_refined_zip"
+    )
+
+
 def main():
     st.title("🍌 PaperBanana 演示")
     st.markdown("AI 驱动的科学图表生成与精修")
@@ -2771,89 +2875,12 @@ def main():
         else:
             st.info("请上传图像，或先在生成结果中点击“送去精修”载入候选方案。")
 
-            # 展示精修结果（如有）
-            if "refined_images" in st.session_state and st.session_state["refined_images"]:
-                st.divider()
-                st.markdown("## 🎨 精修结果")
-                final_resolution = st.session_state.get("refine_result_resolution", refine_resolution)
-                final_count = st.session_state.get("refine_count", len(st.session_state["refined_images"]))
-                refine_provider_used = st.session_state.get("refine_provider_used", refine_provider)
-                refine_image_model_used = st.session_state.get("refine_image_model_used", refine_image_model_name)
-                failed_refine_results = st.session_state.get("refine_failed_results", [])
-                st.caption(
-                    f"生成时间：{st.session_state.get('refine_timestamp', 'N/A')} | "
-                    f"分辨率：{final_resolution} | 张数：{final_count} | "
-                    f"Provider：{refine_provider_used} | 模型：{refine_image_model_used}"
-                )
-                if failed_refine_results:
-                    st.warning(f"有 {len(failed_refine_results)} 张精修失败。")
-                    with st.expander("查看失败详情", expanded=False):
-                        for item in failed_refine_results:
-                            st.write(f"结果 {item['index']}: {item['message']}")
-
-                st.markdown("### 精修前")
-                original_preview_bytes = st.session_state.get(
-                    "refine_original_image_bytes",
-                    uploaded_file.getvalue() if uploaded_file is not None else b"",
-                )
-                if original_preview_bytes:
-                    st.image(Image.open(BytesIO(original_preview_bytes)), use_container_width=True)
-
-                st.markdown(f"### 精修后（{final_resolution}）")
-                refined_images = st.session_state["refined_images"]
-
-                import zipfile
-                zip_buffer = BytesIO()
-                zip_name = f"refined_{final_resolution}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    for item in refined_images:
-                        idx = item.get("index", 0)
-                        img_bytes = item.get("bytes", b"")
-                        if not img_bytes:
-                            continue
-                        file_name = f"refined_{final_resolution}_{idx}.png"
-                        zip_file.writestr(file_name, img_bytes)
-
-                # 两列网格预览，缩小占位（仅影响预览，不影响下载原图）
-                preview_cols = 2
-                preview_width_px = 420
-                for row_start in range(0, len(refined_images), preview_cols):
-                    cols = st.columns(preview_cols, gap="large")
-                    for col_offset in range(preview_cols):
-                        item_pos = row_start + col_offset
-                        if item_pos >= len(refined_images):
-                            continue
-
-                        item = refined_images[item_pos]
-                        idx = item.get("index", item_pos + 1)
-                        img_bytes = item.get("bytes", b"")
-                        if not img_bytes:
-                            continue
-
-                        with cols[col_offset]:
-                            st.markdown(f"#### 结果 {idx}")
-                            refined_image = Image.open(BytesIO(img_bytes))
-                            st.image(refined_image, width=preview_width_px)
-
-                            file_name = f"refined_{final_resolution}_{idx}.png"
-                            st.download_button(
-                                label=f"[DOWN] 下载结果 {idx}",
-                                data=img_bytes,
-                                file_name=file_name,
-                                mime="image/png",
-                                key=f"download_refined_{idx}_{final_resolution}_{item_pos}",
-                                use_container_width=True
-                            )
-
-                zip_buffer.seek(0)
-                st.download_button(
-                    label="[DOWN] 一键下载全部结果（ZIP）",
-                    data=zip_buffer.getvalue(),
-                    file_name=zip_name,
-                    mime="application/zip",
-                    use_container_width=True,
-                    key="download_refined_zip"
-                )
+        render_refine_results_section(
+            uploaded_file=uploaded_file,
+            fallback_resolution=refine_resolution,
+            fallback_provider=refine_provider,
+            fallback_image_model_name=refine_image_model_name,
+        )
 
 if __name__ == "__main__":
     main()
