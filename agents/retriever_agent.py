@@ -169,7 +169,8 @@ class RetrieverAgent(BaseAgent):
             )
             data["top10_references"] = retrieved_ids
             data["retrieved_examples"] = retrieved_examples
-            logger.info(f"✅ 自动检索完成 (lite), {len(data['top10_references'])} 个参考: {data['top10_references']}")
+            logger.info("✅ 自动检索完成 (lite), %s 个参考", len(data["top10_references"]))
+            logger.debug("auto-lite reference ids=%s", data["top10_references"])
 
         elif retrieval_setting == "auto-full":
             retrieved_ids, retrieved_examples = await self._retrieve_and_parse(
@@ -180,7 +181,8 @@ class RetrieverAgent(BaseAgent):
             )
             data["top10_references"] = retrieved_ids
             data["retrieved_examples"] = retrieved_examples
-            logger.info(f"✅ 自动检索完成 (full), {len(data['top10_references'])} 个参考: {data['top10_references']}")
+            logger.info("✅ 自动检索完成 (full), %s 个参考", len(data["top10_references"]))
+            logger.debug("auto-full reference ids=%s", data["top10_references"])
         else:
             raise ValueError(f"Unknown retrieval_setting: {retrieval_setting}")
 

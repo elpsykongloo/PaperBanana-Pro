@@ -40,8 +40,8 @@ class _DummyGeminiClient:
 
 
 class _DummyConfig:
-    def __init__(self):
-        self.candidate_count = 1
+    def __init__(self, candidate_count=1):
+        self.candidate_count = candidate_count
         self.response_modalities = None
 
 
@@ -55,18 +55,18 @@ class _DummyEvolinkProvider:
 
 class GenerationUtilsRuntimeContextTest(unittest.TestCase):
     def test_concurrent_runtime_contexts_use_isolated_clients_and_hooks(self):
-        hook_messages_a = []
-        hook_messages_b = []
+        hook_events_a = []
+        hook_events_b = []
         context_a = generation_utils.RuntimeContext(
             provider="gemini",
             api_key="key-a",
-            status_hook=hook_messages_a.append,
+            event_hook=hook_events_a.append,
             gemini_client=_DummyGeminiClient("result-a", delay=0.02),
         )
         context_b = generation_utils.RuntimeContext(
             provider="gemini",
             api_key="key-b",
-            status_hook=hook_messages_b.append,
+            event_hook=hook_events_b.append,
             gemini_client=_DummyGeminiClient("result-b", delay=0.0),
         )
 
@@ -90,10 +90,10 @@ class GenerationUtilsRuntimeContextTest(unittest.TestCase):
         results = asyncio.run(run_both())
 
         self.assertEqual(results, [["result-a"], ["result-b"]])
-        self.assertTrue(any("model=model-a" in message for message in hook_messages_a))
-        self.assertTrue(any("model=model-b" in message for message in hook_messages_b))
-        self.assertFalse(any("model=model-b" in message for message in hook_messages_a))
-        self.assertFalse(any("model=model-a" in message for message in hook_messages_b))
+        self.assertTrue(any(event.get("model") == "model-a" for event in hook_events_a))
+        self.assertTrue(any(event.get("model") == "model-b" for event in hook_events_b))
+        self.assertFalse(any(event.get("model") == "model-b" for event in hook_events_a))
+        self.assertFalse(any(event.get("model") == "model-a" for event in hook_events_b))
 
     def test_close_runtime_context_only_closes_owned_provider(self):
         provider = _DummyEvolinkProvider()
@@ -107,6 +107,28 @@ class GenerationUtilsRuntimeContextTest(unittest.TestCase):
         asyncio.run(generation_utils.close_runtime_context(context))
 
         self.assertEqual(provider.close_calls, 1)
+
+    def test_gemini_retry_handles_none_candidate_count(self):
+        context = generation_utils.RuntimeContext(
+            provider="gemini",
+            api_key="key-a",
+            gemini_client=_DummyGeminiClient("result-a", delay=0.0),
+        )
+
+        async def run_once():
+            with generation_utils.use_runtime_context(context):
+                return await generation_utils.call_gemini_with_retry_async(
+                    model_name="model-a",
+                    contents=[{"type": "text", "text": "hello"}],
+                    config=_DummyConfig(candidate_count=None),
+                    max_attempts=1,
+                    retry_delay=0,
+                    error_context="candidate-count-none",
+                )
+
+        results = asyncio.run(run_once())
+
+        self.assertEqual(results, ["result-a"])
 
     def test_close_runtime_context_skips_unowned_provider(self):
         provider = _DummyEvolinkProvider()

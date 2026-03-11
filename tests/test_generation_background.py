@@ -160,6 +160,7 @@ class GenerationBackgroundJobTest(unittest.TestCase):
 
             self.assertEqual(snapshot["status"], "completed")
             self.assertEqual(len(snapshot["results"]), 2)
+            self.assertTrue(snapshot["event_history"])
             self.assertEqual(snapshot["json_file"], "D:/tmp/demo_generation.json")
             self.assertEqual(snapshot["bundle_file"], "D:/tmp/demo_generation.bundle.json")
             self.assertEqual(snapshot["curated_profile"], "default")
@@ -245,10 +246,26 @@ class GenerationBackgroundJobTest(unittest.TestCase):
         original_process = demo.process_parallel_candidates
         original_save = demo.save_demo_generation_artifacts
 
-        async def fake_process_parallel_candidates(data_list, progress_callback=None, status_callback=None, **kwargs):
+        async def fake_process_parallel_candidates(
+            data_list,
+            progress_callback=None,
+            status_callback=None,
+            event_callback=None,
+            **kwargs,
+        ):
             if progress_callback:
                 progress_callback(0, 1, 1)
-            if status_callback:
+            if event_callback:
+                event_callback(
+                    {
+                        "candidate_id": 0,
+                        "kind": "stage",
+                        "status": "running",
+                        "stage": "planner 规划中",
+                        "message": "候选 0: planner 规划中",
+                    }
+                )
+            elif status_callback:
                 status_callback("候选 0: planner 规划中")
             logging.getLogger("PlannerAgent").info("测试规划日志已同步")
             await asyncio.sleep(0.01)
@@ -299,6 +316,9 @@ class GenerationBackgroundJobTest(unittest.TestCase):
             snapshot = self._wait_for_terminal_snapshot(job_id)
 
             self.assertEqual(snapshot["candidate_stage_map"]["0"], "planner 规划中")
+            self.assertTrue(
+                any(event.get("stage") == "planner 规划中" for event in snapshot["event_history"])
+            )
             self.assertTrue(
                 any("测试规划日志已同步" in line for line in snapshot["status_history"])
             )
@@ -385,6 +405,9 @@ class GenerationBackgroundJobTest(unittest.TestCase):
             snapshot = self._wait_for_terminal_snapshot(job_id)
 
             candidate_snapshot = snapshot["candidate_snapshots"]["0"]
+            self.assertTrue(
+                any(event.get("kind") == "preview_ready" for event in snapshot["event_history"])
+            )
             self.assertEqual(candidate_snapshot["preview_label"], "target_diagram_desc0")
             self.assertTrue(candidate_snapshot["preview_image"])
             self.assertEqual(candidate_snapshot["status"], "completed")

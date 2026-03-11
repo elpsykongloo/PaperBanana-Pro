@@ -170,6 +170,32 @@ class PaperVizProcessorRegistryTest(unittest.TestCase):
         self.assertEqual([item["input_index"] for item in results], [0, 1, 2])
         self.assertEqual([item["candidate_id"] for item in results], [0, 1, 2])
 
+    def test_process_single_query_emits_unique_stage_events(self):
+        processor = self._build_processor("dev_planner")
+        events = []
+
+        asyncio.run(
+            processor.process_single_query(
+                {
+                    "candidate_id": 0,
+                    "content": "method",
+                    "visual_intent": "diagram",
+                },
+                do_eval=False,
+                event_callback=events.append,
+            )
+        )
+
+        self.assertEqual(
+            sum(1 for event in events if event.get("kind") == "stage" and event.get("stage") == "开始处理"),
+            1,
+        )
+        self.assertEqual(
+            sum(1 for event in events if event.get("kind") == "stage" and event.get("stage") == "planner 规划中"),
+            1,
+        )
+        self.assertTrue(any(event.get("kind") == "preview_ready" for event in events))
+
     def test_shutdown_closes_agent_resources_when_supported(self):
         processor = self._build_processor("dev_planner")
 

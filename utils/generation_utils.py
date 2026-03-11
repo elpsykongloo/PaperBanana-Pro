@@ -19,6 +19,7 @@ API 调用工具函数，支持 Evolink、Gemini、Claude、OpenAI 等多种 Pro
 import json
 import asyncio
 import base64
+import logging
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -35,6 +36,7 @@ from pathlib import Path
 
 from utils.config_loader import load_model_config, get_config_val
 from utils.log_config import get_logger
+from utils.runtime_events import create_runtime_event
 
 logger = get_logger("GenerationUtils")
 
@@ -44,8 +46,9 @@ REPO_ROOT = Path(__file__).parent.parent
 model_config = load_model_config(REPO_ROOT)
 
 
-# ==================== 运行时状态回调（用于 UI 实时反馈） ====================
+# ==================== 运行时事件回调（用于 UI 实时反馈） ====================
 
+runtime_event_hook: Optional[Callable[[dict[str, Any]], None]] = None
 runtime_status_hook: Optional[Callable[[str], None]] = None
 
 DEFAULT_GEMINI_IMAGE_FALLBACK_MODEL = "gemini-3.1-flash-image-preview"
@@ -69,6 +72,7 @@ class RuntimeContext:
     provider: str = ""
     api_key: str = ""
     base_url: str = ""
+    event_hook: Optional[Callable[[dict[str, Any]], None]] = None
     status_hook: Optional[Callable[[str], None]] = None
     cancel_check: Optional[Callable[[], bool]] = None
     gemini_client: Any = None
@@ -188,6 +192,7 @@ def create_runtime_context(
     *,
     provider: str = "",
     api_key: str = "",
+    event_hook: Optional[Callable[[dict[str, Any]], None]] = None,
     status_hook: Optional[Callable[[str], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     base_url: str = "",
@@ -198,6 +203,7 @@ def create_runtime_context(
         provider=normalized_provider,
         api_key=str(api_key or "").strip(),
         base_url=resolved_base_url,
+        event_hook=event_hook,
         status_hook=status_hook,
         cancel_check=cancel_check,
     )
@@ -250,8 +256,17 @@ def reinitialize_runtime_context(context: RuntimeContext | None) -> RuntimeConte
     return context
 
 
+def set_runtime_event_hook(hook: Optional[Callable[[dict[str, Any]], None]]) -> None:
+    """设置运行时结构化事件回调。"""
+    global runtime_event_hook
+    runtime_event_hook = hook
+    context = _active_runtime_context.get() or _default_runtime_context
+    if context is not None:
+        context.event_hook = hook
+
+
 def set_runtime_status_hook(hook: Optional[Callable[[str], None]]) -> None:
-    """设置运行时状态回调。"""
+    """兼容旧接口：设置纯文本状态回调。"""
     global runtime_status_hook
     runtime_status_hook = hook
     context = _active_runtime_context.get() or _default_runtime_context
@@ -283,8 +298,73 @@ def _safe_log(message: Any) -> None:
         pass
 
 
+def _emit_runtime_event(
+    *,
+    level: str = "INFO",
+    kind: str = "job",
+    message: str,
+    source: str = "GenerationUtils",
+    job_type: str = "",
+    candidate_id: Any = "",
+    stage: str = "",
+    status: str = "",
+    provider: str = "",
+    model: str = "",
+    attempt: int | None = None,
+    error_code: int | None = None,
+    preview_image: str = "",
+    preview_mime_type: str = "",
+    preview_label: str = "",
+    details: Any = "",
+) -> dict[str, Any]:
+    """Emit one structured runtime event without raising to callers."""
+    event = create_runtime_event(
+        level=level,
+        kind=kind,
+        source=source,
+        message=message,
+        job_type=job_type,
+        candidate_id=candidate_id,
+        stage=stage,
+        status=status,
+        provider=provider,
+        model=model,
+        attempt=attempt,
+        error_code=error_code,
+        preview_image=preview_image,
+        preview_mime_type=preview_mime_type,
+        preview_label=preview_label,
+        details=_safe_text_for_log(details, max_len=3000) if details else "",
+    )
+    payload = event.to_dict()
+    try:
+        logger.log(
+            getattr(logging, event.level, logging.INFO),
+            payload["message"],
+            extra={"paperbanana_event": dict(payload)},
+        )
+    except Exception as err:
+        _safe_log(f"runtime_event logger emit 失败: {err}")
+    hook = runtime_event_hook
+    context = get_active_runtime_context()
+    if context is not None and context.event_hook is not None:
+        hook = context.event_hook
+    if hook is not None:
+        try:
+            hook(payload)
+        except Exception as err:
+            _safe_log(f"runtime_event_hook 调用失败: {err}")
+    return payload
+
+
 def _emit_runtime_status(message: str) -> None:
-    """发送运行时状态（失败不影响主流程）。"""
+    """兼容旧接口：发送纯文本状态，同时优先转成结构化事件。"""
+    payload = _emit_runtime_event(
+        level="INFO",
+        kind="job",
+        message=message,
+        source="GenerationUtils",
+    )
     hook = runtime_status_hook
     context = get_active_runtime_context()
     if context is not None and context.status_hook is not None:
@@ -294,7 +374,7 @@ def _emit_runtime_status(message: str) -> None:
     try:
         hook(message)
     except Exception as err:
-        _safe_log(f"[DEBUG] [WARN] runtime_status_hook 调用失败: {err}")
+        _safe_log(f"runtime_status_hook 调用失败: {err}")
 
 # ==================== 原始 Provider 初始化（保留兼容性） ====================
 
@@ -336,6 +416,7 @@ set_default_runtime_context(
         provider="",
         api_key="",
         base_url=evolink_base_url,
+        event_hook=runtime_event_hook,
         status_hook=runtime_status_hook,
         gemini_client=_create_gemini_client(gemini_api_key),
         anthropic_client=_create_anthropic_client(anthropic_api_key),
@@ -346,15 +427,15 @@ set_default_runtime_context(
 )
 
 if get_default_runtime_context() and get_default_runtime_context().evolink_provider:
-    logger.info(f"✅ 已初始化 Evolink Provider (base_url={evolink_base_url})")
+    logger.debug("默认 Evolink Provider 已初始化 (base_url=%s)", evolink_base_url)
 else:
     logger.debug("未配置 Evolink API Key；仅当选择 evolink provider 时才会影响运行。")
 if get_default_runtime_context() and get_default_runtime_context().gemini_client:
-    logger.info("✅ 已初始化 Gemini Client")
+    logger.debug("默认 Gemini Client 已初始化")
 if get_default_runtime_context() and get_default_runtime_context().anthropic_client:
-    logger.info("✅ 已初始化 Anthropic Client")
+    logger.debug("默认 Anthropic Client 已初始化")
 if get_default_runtime_context() and get_default_runtime_context().openai_client:
-    logger.info("✅ 已初始化 OpenAI Client")
+    logger.debug("默认 OpenAI Client 已初始化")
 
 
 def _cleanup_evolink_provider():
@@ -387,7 +468,8 @@ def init_evolink_provider(api_key: str, base_url: str = ""):
     context.evolink_provider = _create_evolink_provider(api_key, context.base_url)
     context.owns_evolink_provider = context.evolink_provider is not None
     set_default_runtime_context(context)
-    logger.info(f"✅ 已通过界面初始化 Evolink Provider (base_url={context.base_url})")
+    if context.evolink_provider is not None:
+        logger.debug("运行时 Evolink Provider 已初始化")
 
 
 def init_gemini_client(api_key: str):
@@ -400,7 +482,7 @@ def init_gemini_client(api_key: str):
     context.gemini_client = _create_gemini_client(api_key)
     set_default_runtime_context(context)
     if context.gemini_client is not None:
-        logger.info("✅ 已通过界面初始化 Gemini Client")
+        logger.debug("运行时 Gemini Client 已初始化")
 
 
 # ==================== Evolink 调用函数 ====================
@@ -838,7 +920,8 @@ async def call_gemini_with_retry_async(
 
     result_list: List[str] = []
     target_candidate_count = int(getattr(config, "candidate_count", 1) or 1)
-    if hasattr(config, "candidate_count") and config.candidate_count > 8:
+    current_candidate_count = getattr(config, "candidate_count", None) if hasattr(config, "candidate_count") else None
+    if isinstance(current_candidate_count, int) and current_candidate_count > 8:
         config.candidate_count = 8
 
     current_contents = contents
@@ -868,10 +951,21 @@ async def call_gemini_with_retry_async(
                 if client is None:
                     raise RuntimeError("Gemini Client 未初始化，请检查 Google API Key。")
                 gemini_contents = _convert_to_gemini_parts(current_contents)
-                context_msg = f" ({error_context})" if error_context else ""
-                _emit_runtime_status(
-                    f"[TRY] stage={stage_name} model={stage_model_name} "
-                    f"attempt={attempt_idx + 1}/{stage_attempts}{context_msg}"
+                _emit_runtime_event(
+                    level="INFO",
+                    kind="job",
+                    source="GenerationUtils",
+                    job_type="generation",
+                    provider="gemini",
+                    model=stage_model_name,
+                    attempt=attempt_idx + 1,
+                    stage=stage_name,
+                    status="running",
+                    message=(
+                        f"Gemini 请求开始：stage={stage_name} "
+                        f"attempt={attempt_idx + 1}/{stage_attempts}"
+                    ),
+                    details=error_context,
                 )
                 response = await asyncio.wait_for(
                     client.aio.models.generate_content(
@@ -937,7 +1031,20 @@ async def call_gemini_with_retry_async(
                     retry_delay=current_delay,
                     error_context=error_context,
                 )
-                _emit_runtime_status(retry_line)
+                _emit_runtime_event(
+                    level="WARNING",
+                    kind="retry",
+                    source="GenerationUtils",
+                    job_type="generation",
+                    provider="gemini",
+                    model=stage_model_name,
+                    attempt=attempt_idx + 1,
+                    stage=stage_name,
+                    status="retrying",
+                    error_code=parsed_meta.get("code"),
+                    message=retry_line,
+                    details=error_text,
+                )
                 _safe_log(f"[Gemini] {retry_line} | error={_safe_text_for_log(error_text, max_len=1200)}")
 
                 last_error_meta = {
@@ -954,8 +1061,19 @@ async def call_gemini_with_retry_async(
                         raise asyncio.CancelledError()
                     await asyncio.sleep(current_delay)
                 else:
-                    _emit_runtime_status(
-                        f"[ROTATE] stage={stage_name} model={stage_model_name} exhausted {stage_attempts} attempts"
+                    _emit_runtime_event(
+                        level="WARNING",
+                        kind="warning",
+                        source="GenerationUtils",
+                        job_type="generation",
+                        provider="gemini",
+                        model=stage_model_name,
+                        stage=stage_name,
+                        status="rotate",
+                        message=(
+                            f"Gemini 当前阶段重试已耗尽：stage={stage_name} "
+                            f"model={stage_model_name} attempts={stage_attempts}"
+                        ),
                     )
 
         return stage_results[:target_candidate_count], last_error_meta, len(stage_results) >= target_candidate_count
@@ -981,9 +1099,18 @@ async def call_gemini_with_retry_async(
                 continue
 
             if stage_model_name != model_name or cycle_index > 0:
-                _emit_runtime_status(
-                    f"[FALLBACK] cycle={cycle_index + 1} step={ladder_index + 1}/{len(model_ladder)} "
-                    f"model={stage_model_name}"
+                _emit_runtime_event(
+                    level="INFO",
+                    kind="warning",
+                    source="GenerationUtils",
+                    job_type="generation",
+                    provider="gemini",
+                    model=stage_model_name,
+                    status="fallback",
+                    message=(
+                        f"Gemini 模型降级：cycle={cycle_index + 1} "
+                        f"step={ladder_index + 1}/{len(model_ladder)} model={stage_model_name}"
+                    ),
                 )
 
             stage_results, stage_error_meta, stage_success = await _run_stage(
@@ -998,9 +1125,20 @@ async def call_gemini_with_retry_async(
                 final_error_meta = stage_error_meta
                 error_text = str(stage_error_meta.get("error_text", ""))
                 if _is_gemini_non_retryable_error(error_text):
-                    _emit_runtime_status(
-                        f"[FAIL] non-retryable Gemini error: model={stage_model_name} "
-                        f"code={stage_error_meta.get('code')} status={stage_error_meta.get('status')}"
+                    _emit_runtime_event(
+                        level="ERROR",
+                        kind="error",
+                        source="GenerationUtils",
+                        job_type="generation",
+                        provider="gemini",
+                        model=stage_model_name,
+                        status="failed",
+                        error_code=stage_error_meta.get("code"),
+                        message=(
+                            f"Gemini 不可恢复错误：model={stage_model_name} "
+                            f"code={stage_error_meta.get('code')} status={stage_error_meta.get('status')}"
+                        ),
+                        details=stage_error_meta.get("error_text", ""),
                     )
                     _safe_log(
                         f"[Gemini] 非可恢复错误 ({error_context}): {stage_error_meta.get('error_text', '')}"
@@ -1013,9 +1151,22 @@ async def call_gemini_with_retry_async(
 
         last_error_text = str(final_error_meta.get("error_text", ""))
         if final_error_meta and not _should_retry_gemini_forever(last_error_text):
-            _emit_runtime_status(
-                f"[FAIL] Gemini retries stopped: "
-                f"last_stage={final_error_meta.get('stage')} model={final_error_meta.get('model')}"
+            _emit_runtime_event(
+                level="ERROR",
+                kind="error",
+                source="GenerationUtils",
+                job_type="generation",
+                provider="gemini",
+                model=final_error_meta.get("model", ""),
+                stage=final_error_meta.get("stage", ""),
+                status="failed",
+                error_code=final_error_meta.get("code"),
+                message=(
+                    "Gemini 停止重试："
+                    f"last_stage={final_error_meta.get('stage')} "
+                    f"model={final_error_meta.get('model')}"
+                ),
+                details=final_error_meta.get("error_text", ""),
             )
             _safe_log(
                 f"[Gemini] 停止重试 ({error_context}): {final_error_meta.get('error_text', '')}"
@@ -1024,9 +1175,19 @@ async def call_gemini_with_retry_async(
             return result_list
 
         cycle_delay = _compute_cycle_cooldown_seconds(last_error_text, retry_delay, cycle_index)
-        _emit_runtime_status(
-            f"[CYCLE] Gemini 阶梯模型已轮询完成，{cycle_delay:.1f}s 后继续重试 "
-            f"(cycle={cycle_index + 1}, ladder={','.join(model_ladder)})"
+        _emit_runtime_event(
+            level="WARNING",
+            kind="retry",
+            source="GenerationUtils",
+            job_type="generation",
+            provider="gemini",
+            model=model_name,
+            status="retrying",
+            message=(
+                f"Gemini 阶梯模型已轮询完成，{cycle_delay:.1f}s 后继续重试 "
+                f"(cycle={cycle_index + 1}, ladder={','.join(model_ladder)})"
+            ),
+            details=last_error_text,
         )
         if _runtime_cancel_requested():
             raise asyncio.CancelledError()
@@ -1088,12 +1249,39 @@ async def call_claude_with_retry_async(
         except Exception as e:
             error_str = str(e).lower()
             context_msg = f" for {error_context}" if error_context else ""
-            logger.warning(f"⚠️  验证第 {attempt + 1} 次尝试失败{context_msg}: {error_str}。{retry_delay}s 后重试...")
+            _emit_runtime_event(
+                level="WARNING",
+                kind="retry",
+                source="GenerationUtils",
+                job_type="generation",
+                provider="anthropic",
+                model=model_name,
+                attempt=attempt + 1,
+                status="retrying",
+                message=f"Anthropic 验证失败，第 {attempt + 1}/{max_attempts} 次重试前等待 {retry_delay}s",
+                details=f"{context_msg}: {error_str}",
+            )
+            logger.warning(
+                "Anthropic 验证第 %s 次尝试失败%s，%ss 后重试",
+                attempt + 1,
+                context_msg,
+                retry_delay,
+            )
             if attempt < max_attempts - 1:
                 await asyncio.sleep(retry_delay)
 
     if not is_input_valid:
-        logger.error(f"❌ 全部 {max_attempts} 次验证尝试失败，返回错误")
+        _emit_runtime_event(
+            level="ERROR",
+            kind="error",
+            source="GenerationUtils",
+            job_type="generation",
+            provider="anthropic",
+            model=model_name,
+            status="failed",
+            message=f"Anthropic 在 {max_attempts} 次尝试后仍然失败",
+        )
+        logger.error("Anthropic 全部 %s 次验证尝试失败，返回错误", max_attempts)
         return ["Error"] * candidate_num
 
     remaining_candidates = candidate_num - 1
@@ -1152,12 +1340,39 @@ async def call_openai_with_retry_async(
         except Exception as e:
             error_str = str(e).lower()
             context_msg = f" for {error_context}" if error_context else ""
-            logger.warning(f"⚠️  验证第 {attempt + 1} 次尝试失败{context_msg}: {error_str}。{retry_delay}s 后重试...")
+            _emit_runtime_event(
+                level="WARNING",
+                kind="retry",
+                source="GenerationUtils",
+                job_type="generation",
+                provider="openai",
+                model=model_name,
+                attempt=attempt + 1,
+                status="retrying",
+                message=f"OpenAI 验证失败，第 {attempt + 1}/{max_attempts} 次重试前等待 {retry_delay}s",
+                details=f"{context_msg}: {error_str}",
+            )
+            logger.warning(
+                "OpenAI 验证第 %s 次尝试失败%s，%ss 后重试",
+                attempt + 1,
+                context_msg,
+                retry_delay,
+            )
             if attempt < max_attempts - 1:
                 await asyncio.sleep(retry_delay)
 
     if not is_input_valid:
-        logger.error(f"❌ 全部 {max_attempts} 次验证尝试失败，返回错误")
+        _emit_runtime_event(
+            level="ERROR",
+            kind="error",
+            source="GenerationUtils",
+            job_type="generation",
+            provider="openai",
+            model=model_name,
+            status="failed",
+            message=f"OpenAI 在 {max_attempts} 次尝试后仍然失败",
+        )
+        logger.error("OpenAI 全部 %s 次验证尝试失败，返回错误", max_attempts)
         return ["Error"] * candidate_num
 
     remaining_candidates = candidate_num - 1
@@ -1213,17 +1428,56 @@ async def call_openai_image_generation_with_retry_async(
             if response.data and response.data[0].b64_json:
                 return [response.data[0].b64_json]
             else:
-                logger.warning("⚠️  OpenAI 图像生成失败，未返回数据")
+                _emit_runtime_event(
+                    level="WARNING",
+                    kind="warning",
+                    source="GenerationUtils",
+                    job_type="generation",
+                    provider="openai",
+                    model=model_name,
+                    attempt=attempt + 1,
+                    status="retrying",
+                    message="OpenAI 图像生成未返回数据，将继续重试",
+                )
+                logger.warning("OpenAI 图像生成失败，未返回数据")
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(retry_delay)
                 continue
         except Exception as e:
             context_msg = f" for {error_context}" if error_context else ""
-            logger.warning(f"⚠️  OpenAI 图像生成第 {attempt + 1} 次尝试失败{context_msg}: {e}。{retry_delay}s 后重试...")
+            _emit_runtime_event(
+                level="WARNING",
+                kind="retry",
+                source="GenerationUtils",
+                job_type="generation",
+                provider="openai",
+                model=model_name,
+                attempt=attempt + 1,
+                status="retrying",
+                message=f"OpenAI 图像生成第 {attempt + 1}/{max_attempts} 次尝试失败，{retry_delay}s 后重试",
+                details=f"{context_msg}: {e}",
+            )
+            logger.warning(
+                "OpenAI 图像生成第 %s 次尝试失败%s，%ss 后重试",
+                attempt + 1,
+                context_msg,
+                retry_delay,
+            )
             if attempt < max_attempts - 1:
                 await asyncio.sleep(retry_delay)
             else:
-                logger.error(f"❌ OpenAI 图像生成全部 {max_attempts} 次尝试失败{context_msg}")
+                _emit_runtime_event(
+                    level="ERROR",
+                    kind="error",
+                    source="GenerationUtils",
+                    job_type="generation",
+                    provider="openai",
+                    model=model_name,
+                    status="failed",
+                    message=f"OpenAI 图像生成在 {max_attempts} 次尝试后仍然失败",
+                    details=f"{context_msg}: {e}",
+                )
+                logger.error("OpenAI 图像生成全部 %s 次尝试失败%s", max_attempts, context_msg)
                 return ["Error"]
 
     return ["Error"]

@@ -36,7 +36,7 @@ from utils.result_bundle import (
 from utils.result_order import sort_results_stably
 from utils.run_report import build_failure_manifest, build_result_summary
 from utils.runtime_settings import build_runtime_context
-setup_logging("INFO")
+setup_logging("INFO", mode="cli")
 
 from agents import (
     VanillaAgent, PlannerAgent, VisualizerAgent,

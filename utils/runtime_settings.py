@@ -134,6 +134,7 @@ def build_runtime_context(
     settings: RuntimeSettings,
     *,
     status_hook=None,
+    event_hook=None,
     cancel_check=None,
 ):
     """Build an isolated runtime context for one run/session."""
@@ -142,6 +143,7 @@ def build_runtime_context(
     return generation_utils.create_runtime_context(
         provider=settings.provider,
         api_key=settings.api_key,
+        event_hook=event_hook,
         status_hook=status_hook,
         cancel_check=cancel_check,
     )

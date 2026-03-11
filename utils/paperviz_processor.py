@@ -37,6 +37,7 @@ from .pipeline_state import PipelineState
 from .result_order import prepare_input_payload
 
 from utils.log_config import get_logger
+from utils.runtime_events import coerce_runtime_event, create_runtime_event
 
 logger = get_logger("PaperVizProcessor")
 
@@ -140,65 +141,30 @@ class PaperVizProcessor:
 
         if stage_name == "vanilla":
             logger.debug(f"[{candidate_id}] 流水线阶段: vanilla_agent")
-            self._emit_status(status_callback, candidate_id, "vanilla 生成中")
-            self._emit_event(event_callback, {
-                "candidate_id": candidate_id,
-                "kind": "stage",
-                "status": "running",
-                "stage": "vanilla 生成中",
-                "message": f"候选 {candidate_id}: vanilla 生成中",
-            })
+            self._emit_status(status_callback, event_callback, candidate_id, "vanilla 生成中")
             return await self.vanilla_agent.process(data)
 
         if stage_name == "retriever":
-            self._emit_status(status_callback, candidate_id, "retriever 检索中")
-            self._emit_event(event_callback, {
-                "candidate_id": candidate_id,
-                "kind": "stage",
-                "status": "running",
-                "stage": "retriever 检索中",
-                "message": f"候选 {candidate_id}: retriever 检索中",
-            })
+            self._emit_status(status_callback, event_callback, candidate_id, "retriever 检索中")
             data = await self.retriever_agent.process(data, retrieval_setting=retrieval_setting)
             logger.debug(f"[{candidate_id}] ✅ retriever 完成")
             return data
 
         if stage_name == "planner":
-            self._emit_status(status_callback, candidate_id, "planner 规划中")
-            self._emit_event(event_callback, {
-                "candidate_id": candidate_id,
-                "kind": "stage",
-                "status": "running",
-                "stage": "planner 规划中",
-                "message": f"候选 {candidate_id}: planner 规划中",
-            })
+            self._emit_status(status_callback, event_callback, candidate_id, "planner 规划中")
             data = await self.planner_agent.process(data)
             state = PipelineState(data, task_name)
             logger.debug(f"[{candidate_id}] ✅ planner 完成, desc0 长度={len(data.get(state.planner_desc_key(), ''))}")
             return data
 
         if stage_name == "stylist":
-            self._emit_status(status_callback, candidate_id, "stylist 风格优化中")
-            self._emit_event(event_callback, {
-                "candidate_id": candidate_id,
-                "kind": "stage",
-                "status": "running",
-                "stage": "stylist 风格优化中",
-                "message": f"候选 {candidate_id}: stylist 风格优化中",
-            })
+            self._emit_status(status_callback, event_callback, candidate_id, "stylist 风格优化中")
             data = await self.stylist_agent.process(data)
             logger.debug(f"[{candidate_id}] ✅ stylist 完成")
             return data
 
         if stage_name == "visualizer":
-            self._emit_status(status_callback, candidate_id, "visualizer 生图中")
-            self._emit_event(event_callback, {
-                "candidate_id": candidate_id,
-                "kind": "stage",
-                "status": "running",
-                "stage": "visualizer 生图中",
-                "message": f"候选 {candidate_id}: visualizer 生图中",
-            })
+            self._emit_status(status_callback, event_callback, candidate_id, "visualizer 生图中")
             data = await self.visualizer_agent.process(data)
             state = PipelineState(data, task_name)
             render_desc_key = self._resolve_render_desc_key(state)
@@ -233,14 +199,7 @@ class PaperVizProcessor:
             return data
 
         if stage_name == "polish":
-            self._emit_status(status_callback, candidate_id, "polish 精修中")
-            self._emit_event(event_callback, {
-                "candidate_id": candidate_id,
-                "kind": "stage",
-                "status": "running",
-                "stage": "polish 精修中",
-                "message": f"候选 {candidate_id}: polish 精修中",
-            })
+            self._emit_status(status_callback, event_callback, candidate_id, "polish 精修中")
             return await self.polish_agent.process(data)
 
         raise ValueError(f"Unsupported pipeline stage: {stage_name}")
@@ -248,27 +207,52 @@ class PaperVizProcessor:
     @staticmethod
     def _emit_status(
         status_callback: Optional[Callable[[str], None]],
+        event_callback: Optional[Callable[[Dict[str, Any]], None]],
         candidate_id: Any,
         stage: str,
+        *,
+        level: str = "INFO",
+        kind: str = "stage",
+        status: str = "running",
+        details: str = "",
     ) -> None:
-        if status_callback is None:
-            return
-        try:
-            status_callback(f"候选 {candidate_id}: {stage}")
-        except Exception as err:
-            logger.warning(f"⚠️  status_callback 失败: {err}")
+        payload = create_runtime_event(
+            level=level,
+            kind=kind,
+            source="PaperVizProcessor",
+            message=f"候选 {candidate_id}: {stage}",
+            job_type="generation",
+            candidate_id=candidate_id,
+            stage=stage,
+            status=status,
+            details=details,
+        ).to_dict()
+        if event_callback is not None:
+            try:
+                event_callback(dict(payload))
+                return
+            except Exception as err:
+                logger.warning("event_callback 失败: %s", err)
+        if status_callback is not None:
+            try:
+                status_callback(payload["message"])
+            except Exception as err:
+                logger.warning("status_callback 失败: %s", err)
 
     @staticmethod
     def _emit_event(
         event_callback: Optional[Callable[[Dict[str, Any]], None]],
-        payload: Dict[str, Any],
+        payload: Dict[str, Any] | Any,
     ) -> None:
         if event_callback is None:
             return
         try:
-            event_callback(dict(payload))
+            normalized = coerce_runtime_event(payload, default_source="PaperVizProcessor").to_dict()
+            if not normalized.get("job_type"):
+                normalized["job_type"] = "generation"
+            event_callback(dict(normalized))
         except Exception as err:
-            logger.warning("⚠️  event_callback 失败: %s", err)
+            logger.warning("event_callback 失败: %s", err)
 
     async def _run_critic_iterations(
         self,
@@ -299,16 +283,10 @@ class PaperVizProcessor:
         for round_idx in range(max_rounds):
             self._emit_status(
                 status_callback,
+                event_callback,
                 candidate_id,
                 f"critic 第 {round_idx + 1}/{max_rounds} 轮",
             )
-            self._emit_event(event_callback, {
-                "candidate_id": candidate_id,
-                "kind": "stage",
-                "status": "running",
-                "stage": f"critic 第 {round_idx + 1}/{max_rounds} 轮",
-                "message": f"候选 {candidate_id}: critic 第 {round_idx + 1}/{max_rounds} 轮",
-            })
             state.current_critic_round = round_idx
             data = await self.critic_agent.process(data, source=source)
             state = PipelineState(data, task_name)
@@ -322,8 +300,12 @@ class PaperVizProcessor:
                 logger.warning(f"⚠️  Critic 第 {round_idx} 轮解析失败，停止继续迭代并保留上一版本")
                 self._emit_status(
                     status_callback,
+                    event_callback,
                     candidate_id,
                     f"critic 第 {round_idx + 1}/{max_rounds} 轮解析失败，保留上一版本",
+                    level="WARNING",
+                    kind="warning",
+                    status="failed",
                 )
                 break
              
@@ -331,8 +313,10 @@ class PaperVizProcessor:
                 logger.info(f"✅ Critic 第 {round_idx} 轮无需修改，停止迭代")
                 self._emit_status(
                     status_callback,
+                    event_callback,
                     candidate_id,
                     f"critic 第 {round_idx + 1}/{max_rounds} 轮无需修改，提前结束",
+                    status="completed",
                 )
                 break
             
@@ -346,8 +330,10 @@ class PaperVizProcessor:
                 logger.info(f"✅ Critic 第 {round_idx} 轮完成，可视化成功")
                 self._emit_status(
                     status_callback,
+                    event_callback,
                     candidate_id,
                     f"critic 第 {round_idx + 1}/{max_rounds} 轮可视化成功",
+                    status="running",
                 )
                 self._emit_event(event_callback, {
                     "candidate_id": candidate_id,
@@ -363,8 +349,12 @@ class PaperVizProcessor:
                 logger.warning(f"⚠️  Critic 第 {round_idx} 轮可视化失败（无有效图像），回滚到: {current_best_image_key}")
                 self._emit_status(
                     status_callback,
+                    event_callback,
                     candidate_id,
                     f"critic 第 {round_idx + 1}/{max_rounds} 轮可视化失败，回退上一版本",
+                    level="WARNING",
+                    kind="warning",
+                    status="failed",
                 )
                 break
          
@@ -400,14 +390,7 @@ class PaperVizProcessor:
         logger.debug(f"\n── process_single_query 开始 ── candidate={candidate_id}")
         logger.debug(f"   exp_mode={exp_mode}, task={task_name}, retrieval={retrieval_setting}, provider={self.exp_config.provider}")
         logger.debug(f"[{candidate_id}] 流水线: {self._format_stage_sequence(spec, max_rounds)}")
-        self._emit_status(status_callback, candidate_id, "开始处理")
-        self._emit_event(event_callback, {
-            "candidate_id": candidate_id,
-            "kind": "stage",
-            "status": "running",
-            "stage": "开始处理",
-            "message": f"候选 {candidate_id}: 开始处理",
-        })
+        self._emit_status(status_callback, event_callback, candidate_id, "开始处理")
         effective_do_eval = do_eval and not spec.disable_eval
 
         for stage_name in spec.stages:
@@ -427,12 +410,12 @@ class PaperVizProcessor:
             data = self._set_eval_image_field(data, task_name, spec.eval_image_source)
 
         logger.debug(f"[{candidate_id}] ── process_single_query 完成 ──")
-        self._emit_status(status_callback, candidate_id, "候选流程完成")
+        self._emit_status(status_callback, event_callback, candidate_id, "候选流程完成", status="completed")
 
         if effective_do_eval:
-            self._emit_status(status_callback, candidate_id, "评测中")
+            self._emit_status(status_callback, event_callback, candidate_id, "评测中")
             data_with_eval = await self.evaluation_function(data, exp_config=self.exp_config)
-            self._emit_status(status_callback, candidate_id, "评测完成")
+            self._emit_status(status_callback, event_callback, candidate_id, "评测完成", status="completed")
             return data_with_eval
         else:
             return data
@@ -455,16 +438,9 @@ class PaperVizProcessor:
             input_index = doc.get("input_index", 0)
             candidate_id = doc.get("candidate_id", input_index)
             if cancel_check and cancel_check():
-                self._emit_status(status_callback, candidate_id, "任务已取消，跳过未开始的候选")
+                self._emit_status(status_callback, event_callback, candidate_id, "任务已取消，跳过未开始的候选", level="WARNING", kind="warning", status="cancelled")
                 raise asyncio.CancelledError()
-            self._emit_status(status_callback, candidate_id, "进入并发执行")
-            self._emit_event(event_callback, {
-                "candidate_id": candidate_id,
-                "kind": "scheduled",
-                "status": "running",
-                "stage": "进入并发执行",
-                "message": f"候选 {candidate_id}: 进入并发执行",
-            })
+            self._emit_status(status_callback, event_callback, candidate_id, "进入并发执行")
             try:
                 result = await self.process_single_query(
                     doc,
@@ -493,17 +469,14 @@ class PaperVizProcessor:
                 err_detail = traceback.format_exc()
                 self._emit_status(
                     status_callback,
+                    event_callback,
                     candidate_id,
                     f"候选失败: {err_summary}",
+                    level="ERROR",
+                    kind="error",
+                    status="failed",
+                    details=err_summary,
                 )
-                self._emit_event(event_callback, {
-                    "candidate_id": candidate_id,
-                    "kind": "candidate_failed",
-                    "status": "failed",
-                    "stage": "候选失败",
-                    "message": f"候选 {candidate_id}: 候选失败: {err_summary}",
-                    "error": err_summary,
-                })
                 try:
                     safe_detail = err_detail.encode("utf-8", errors="backslashreplace").decode("utf-8", errors="ignore")
                     logger.error(f"❌ candidate={candidate_id} 失败: {err_summary}\n{safe_detail}")
@@ -542,14 +515,7 @@ class PaperVizProcessor:
                     break
                 prepared_data = prepared_items[next_schedule_index]
                 candidate_id = prepared_data.get("candidate_id", next_schedule_index)
-                self._emit_status(status_callback, candidate_id, "等待并发槽位")
-                self._emit_event(event_callback, {
-                    "candidate_id": candidate_id,
-                    "kind": "queued",
-                    "status": "queued",
-                    "stage": "等待并发槽位",
-                    "message": f"候选 {candidate_id}: 等待并发槽位",
-                })
+                self._emit_status(status_callback, event_callback, candidate_id, "等待并发槽位", status="queued")
                 task = asyncio.create_task(process_one(prepared_data))
                 active_tasks[task] = next_schedule_index
                 next_schedule_index += 1
@@ -558,7 +524,7 @@ class PaperVizProcessor:
         with tqdm(
             total=len(prepared_items),
             desc="Processing concurrently",
-            disable=status_callback is not None,
+            disable=event_callback is not None or status_callback is not None,
         ) as pbar:
             while active_tasks:
                 done, _ = await asyncio.wait(
@@ -582,8 +548,7 @@ class PaperVizProcessor:
                             if result_data.get("status") == "failed"
                             else f"候选 {candidate_id}: 候选已完成并可展示"
                         ),
-                        "result": result_data,
-                        "error": result_data.get("error", ""),
+                        "details": result_data.get("error", ""),
                     })
                     completed_results.append(result_data)
                     result_index = int(result_data.get("input_index", next_yield_index) or 0)

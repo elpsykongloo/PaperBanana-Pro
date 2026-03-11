@@ -412,7 +412,7 @@ def main():
                 model_label = "Model Plot" if task_type == "plot" else "Model Diagram"
                 st.markdown(f"**{model_label}** ({display_mode})")
                 if model_b64:
-                    st.image(base64_to_image(model_b64), use_container_width=True)
+                    st.image(base64_to_image(model_b64), width="stretch")
                 else:
                     st.error(f"Missing key: `{model_b64_key}`")
                 
@@ -438,7 +438,7 @@ def main():
                 )
                 gt_img = load_local_image(str(resolved_gt_path) if resolved_gt_path else None)
                 if gt_img:
-                    st.image(gt_img, use_container_width=True)
+                    st.image(gt_img, width="stretch")
                 else:
                     st.error(f"Human image not found at: {resolved_gt_path}")
                 
@@ -481,3 +481,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

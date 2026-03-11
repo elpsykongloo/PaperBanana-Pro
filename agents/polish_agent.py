@@ -159,7 +159,7 @@ class PolishAgent(BaseAgent):
         if suggestions:
             data[f"suggestions_{task_name}"] = suggestions
 
-        logger.info(f"📝 建议: {suggestions[:200]}...")
+        logger.debug("polish suggestions preview: %s...", suggestions[:200])
 
         # Step 2: Polish Image using suggestions
         logger.info(f"🎨 [第2步] 使用建议精修图像...")

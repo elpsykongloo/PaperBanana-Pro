@@ -83,9 +83,19 @@ class RefineBackgroundJobTest(unittest.TestCase):
     def test_background_refine_job_records_results(self):
         original = demo.refine_images_with_count
 
-        async def fake_refine_images_with_count(status_callback=None, progress_callback=None, **kwargs):
-            if status_callback:
-                status_callback("[精修][task#1] attempt=1 model=test-image-model")
+        async def fake_refine_images_with_count(status_callback=None, progress_callback=None, event_callback=None, **kwargs):
+            if event_callback:
+                event_callback(
+                    {
+                        "kind": "job",
+                        "status": "running",
+                        "message": "[精修][任务 1] 开始请求，模型=test-image-model",
+                        "job_type": "refine",
+                        "model": "test-image-model",
+                    }
+                )
+            elif status_callback:
+                status_callback("[精修][任务 1] 开始请求，模型=test-image-model")
             await asyncio.sleep(0.01)
             if progress_callback:
                 progress_callback(1, 1)
@@ -108,8 +118,9 @@ class RefineBackgroundJobTest(unittest.TestCase):
 
             self.assertEqual(snapshot["status"], "completed")
             self.assertEqual(len(snapshot["refined_images"]), 1)
+            self.assertTrue(snapshot["event_history"])
             self.assertTrue(
-                any("attempt=1 model=test-image-model" in line for line in snapshot["status_history"])
+                any("模型=test-image-model" in line for line in snapshot["status_history"])
             )
         finally:
             demo.refine_images_with_count = original
@@ -143,6 +154,36 @@ class RefineBackgroundJobTest(unittest.TestCase):
 
             self.assertEqual(snapshot["status"], "cancelled")
             self.assertTrue(snapshot["cancel_requested"])
+        finally:
+            demo.refine_images_with_count = original
+            demo.clear_refine_job(job_id)
+
+    def test_background_refine_job_marks_all_failures_as_failed(self):
+        original = demo.refine_images_with_count
+
+        async def fake_refine_images_with_count(**kwargs):
+            await asyncio.sleep(0.01)
+            return [(None, "❌ mock refine failure")]
+
+        demo.refine_images_with_count = fake_refine_images_with_count
+        try:
+            job_id = demo.start_refine_background_job(
+                image_bytes=b"input",
+                edit_prompt="make it better",
+                num_images=1,
+                aspect_ratio="16:9",
+                image_size="2K",
+                api_key="local-test-key",
+                provider="gemini",
+                image_model_name="gemini-3.1-flash-image-preview",
+                input_mime_type="image/png",
+            )
+            snapshot = self._wait_for_terminal_snapshot(job_id)
+
+            self.assertEqual(snapshot["status"], "failed")
+            self.assertEqual(len(snapshot["refined_images"]), 0)
+            self.assertEqual(len(snapshot["failed_results"]), 1)
+            self.assertIn("mock refine failure", snapshot["error"])
         finally:
             demo.refine_images_with_count = original
             demo.clear_refine_job(job_id)

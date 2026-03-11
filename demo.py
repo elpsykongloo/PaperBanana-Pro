@@ -42,18 +42,25 @@ from typing import Callable, Optional
 
 # 将项目根目录添加到路径
 sys.path.insert(0, str(Path(__file__).parent))
+from utils.log_config import get_logger, setup_logging
+from utils.runtime_events import (
+    coerce_runtime_event,
+    create_runtime_event,
+    event_summary_text,
+    runtime_event_from_log_record,
+)
 
-print("调试：正在导入代理模块...")
+setup_logging("INFO", mode="streamlit")
+logger = get_logger("PaperBananaDemo")
+
 try:
     from agents.planner_agent import PlannerAgent
-    print("调试：已导入 PlannerAgent")
     from agents.visualizer_agent import VisualizerAgent
     from agents.stylist_agent import StylistAgent
     from agents.critic_agent import CriticAgent
     from agents.retriever_agent import RetrieverAgent
     from agents.vanilla_agent import VanillaAgent
     from agents.polish_agent import PolishAgent
-    print("调试：已导入所有代理模块")
     from utils import config, generation_utils
     from utils.config_loader import load_model_config
     from utils.dataset_paths import DEFAULT_DATASET_NAME, get_reference_file_path
@@ -94,21 +101,12 @@ try:
     )
     from utils.plot_input_utils import parse_plot_input_text
     from utils.plot_executor import execute_plot_code_with_details
-    print("调试：已导入工具模块")
 
     REPO_ROOT = Path(__file__).parent
     model_config_data = load_model_config(REPO_ROOT)
-
-except ImportError as e:
-    print(f"调试：导入错误：{e}")
-    import traceback
-    traceback.print_exc()
-    raise e
-except Exception as e:
-    print(f"调试：导入过程中发生异常：{e}")
-    import traceback
-    traceback.print_exc()
-    raise e
+except Exception:
+    logger.exception("demo.py 初始化导入失败")
+    raise
 
 st.set_page_config(
     layout="wide",
@@ -122,6 +120,8 @@ GENERATION_EVENT_HISTORY_LIMIT = 400
 GENERATION_EVENT_RENDER_LIMIT = 40
 REFINE_STATUS_LINE_LIMIT = 120
 REFINE_LOG_RENDER_LIMIT = 12
+REFINE_EVENT_HISTORY_LIMIT = 240
+REFINE_EVENT_RENDER_LIMIT = 30
 GENERATION_CANDIDATE_STATUS_RE = re.compile(r"^候选\s+(.+?):\s*(.+)$")
 GENERATION_LOGGER_NAMES = {
     "PaperVizProcessor",
@@ -130,6 +130,11 @@ GENERATION_LOGGER_NAMES = {
     "VisualizerAgent",
     "CriticAgent",
     "PolishAgent",
+    "GenerationUtils",
+    "ImageUtils",
+}
+REFINE_LOGGER_NAMES = {
+    "PaperBananaDemo",
     "GenerationUtils",
     "ImageUtils",
 }
@@ -172,17 +177,75 @@ def safe_log_text(value, max_len=2000):
     return safe
 
 
-def emit_generation_status(status_callback: Optional[Callable[[str], None]], message: str) -> None:
-    """向 UI 发送生成实时状态。"""
-    if not status_callback or not message:
+def _emit_legacy_status(
+    status_callback: Optional[Callable[[str], None]],
+    event_callback: Optional[Callable[[dict], None]],
+    event_payload: dict,
+) -> None:
+    """Emit structured event first, then fallback to legacy text callbacks."""
+    if event_callback is not None:
+        try:
+            event_callback(dict(event_payload))
+            return
+        except Exception as cb_error:
+            logger.warning("事件回调失败: %s", safe_log_text(cb_error))
+    if status_callback is None:
         return
     try:
-        status_callback(message)
+        status_callback(event_payload.get("message", ""))
     except Exception as cb_error:
-        try:
-            print(f"[DEBUG] [WARN] 生成状态回调失败: {safe_log_text(cb_error)}")
-        except Exception:
-            pass
+        logger.warning("文本状态回调失败: %s", safe_log_text(cb_error))
+
+
+def _log_structured_event(payload: dict) -> None:
+    try:
+        level_name = str(payload.get("level", "INFO") or "INFO").upper()
+        level_no = getattr(logging, level_name, logging.INFO)
+        source_name = str(payload.get("source", "") or "PaperBananaDemo")
+        get_logger(source_name).log(
+            level_no,
+            payload.get("message", ""),
+            extra={"paperbanana_event": dict(payload)},
+        )
+    except Exception as log_error:
+        logger.debug("结构化事件日志写入失败: %s", safe_log_text(log_error))
+
+
+def emit_generation_event(
+    *,
+    message: str,
+    event_callback: Optional[Callable[[dict], None]] = None,
+    status_callback: Optional[Callable[[str], None]] = None,
+    kind: str = "job",
+    level: str = "INFO",
+    source: str = "PaperBananaDemo",
+    candidate_id: str = "",
+    stage: str = "",
+    status: str = "",
+    provider: str = "",
+    model: str = "",
+    attempt: int | None = None,
+    error_code: int | None = None,
+    details: str = "",
+) -> dict:
+    payload = create_runtime_event(
+        level=level,
+        kind=kind,
+        source=source,
+        message=message,
+        job_type="generation",
+        candidate_id=candidate_id,
+        stage=stage,
+        status=status,
+        provider=provider,
+        model=model,
+        attempt=attempt,
+        error_code=error_code,
+        details=details,
+    ).to_dict()
+    _log_structured_event(payload)
+    _emit_legacy_status(status_callback, event_callback, payload)
+    return payload
 
 
 def extract_generation_candidate_stage(message: str) -> tuple[str, str] | None:
@@ -254,17 +317,37 @@ def extract_retry_delay_seconds(error_text: str) -> Optional[float]:
     return None
 
 
-def emit_refine_status(status_callback: Optional[Callable[[str], None]], message: str):
-    """向 UI 发送精修实时状态。"""
-    if not status_callback or not message:
-        return
-    try:
-        status_callback(message)
-    except Exception as cb_error:
-        try:
-            print(f"[DEBUG] [WARN] 精修状态回调失败: {safe_log_text(cb_error)}")
-        except Exception:
-            pass
+def emit_refine_event(
+    *,
+    message: str,
+    event_callback: Optional[Callable[[dict], None]] = None,
+    status_callback: Optional[Callable[[str], None]] = None,
+    kind: str = "job",
+    level: str = "INFO",
+    source: str = "PaperBananaDemo",
+    status: str = "",
+    provider: str = "",
+    model: str = "",
+    attempt: int | None = None,
+    error_code: int | None = None,
+    details: str = "",
+) -> dict:
+    payload = create_runtime_event(
+        level=level,
+        kind=kind,
+        source=source,
+        message=message,
+        job_type="refine",
+        status=status,
+        provider=provider,
+        model=model,
+        attempt=attempt,
+        error_code=error_code,
+        details=details,
+    ).to_dict()
+    _log_structured_event(payload)
+    _emit_legacy_status(status_callback, event_callback, payload)
+    return payload
 
 
 def normalize_image_mime_type(mime_type: Optional[str]) -> str:
@@ -380,9 +463,9 @@ class GenerationJobState:
     effective_concurrent: int = 0
     estimated_batches: int = 0
     status_history: list[str] = field(default_factory=list)
+    event_history: list[dict] = field(default_factory=list)
     candidate_stage_map: dict[str, str] = field(default_factory=dict)
     candidate_snapshots: dict[str, dict] = field(default_factory=dict)
-    event_timeline: list[dict] = field(default_factory=list)
     results: list[dict] = field(default_factory=list)
     summary: dict = field(default_factory=dict)
     failures: list[dict] = field(default_factory=list)
@@ -422,6 +505,7 @@ class GenerationJobState:
                 "effective_concurrent": self.effective_concurrent,
                 "estimated_batches": self.estimated_batches,
                 "status_history": list(self.status_history),
+                "event_history": [dict(item) for item in self.event_history],
                 "candidate_stage_map": dict(self.candidate_stage_map),
                 "candidate_snapshots": {
                     str(candidate_id): {
@@ -430,7 +514,7 @@ class GenerationJobState:
                     }
                     for candidate_id, snapshot in self.candidate_snapshots.items()
                 },
-                "event_timeline": [dict(item) for item in self.event_timeline],
+                "event_timeline": [dict(item) for item in self.event_history],
                 "results": list(self.results),
                 "summary": dict(self.summary),
                 "failures": list(self.failures),
@@ -457,6 +541,7 @@ class RefineJobState:
     progress_done: int = 0
     progress_total: int = 0
     status_history: list[str] = field(default_factory=list)
+    event_history: list[dict] = field(default_factory=list)
     refined_images: list[dict] = field(default_factory=list)
     failed_results: list[dict] = field(default_factory=list)
     error: str = ""
@@ -481,6 +566,7 @@ class RefineJobState:
                 "progress_done": self.progress_done,
                 "progress_total": self.progress_total,
                 "status_history": list(self.status_history),
+                "event_history": [dict(item) for item in self.event_history],
                 "refined_images": list(self.refined_images),
                 "failed_results": list(self.failed_results),
                 "error": self.error,
@@ -731,100 +817,133 @@ def clear_generation_job(job_id: str) -> None:
         GENERATION_JOBS.pop(job_id, None)
 
 
-def append_generation_job_status(job_id: str, message: str) -> None:
-    job = get_generation_job(job_id)
-    if job is None or not message:
+def _should_include_event_source(event_dict: dict) -> bool:
+    source = str(event_dict.get("source", "") or "")
+    kind = str(event_dict.get("kind", "") or "")
+    return source not in {"PaperBananaDemo", "PaperVizProcessor", "GenerationUtils"} and kind not in {
+        "stage",
+        "preview_ready",
+        "candidate_result",
+        "artifact",
+    }
+
+
+def _render_event_status_line(event_dict: dict) -> str:
+    event = coerce_runtime_event(event_dict, default_source="PaperBananaDemo")
+    summary = event_summary_text(
+        event,
+        include_source=_should_include_event_source(event.to_dict()),
+    )
+    return f"[{event.ts}] {clean_text(summary)}"
+
+
+def _append_generation_status_line(job: GenerationJobState, event_dict: dict) -> None:
+    line = _render_event_status_line(event_dict)
+    if job.status_history and job.status_history[-1] == line:
         return
-    with job.lock:
-        candidate_stage = extract_generation_candidate_stage(message)
-        if candidate_stage:
-            candidate_id, stage = candidate_stage
-            job.candidate_stage_map[candidate_id] = stage
-            snapshot = job.candidate_snapshots.setdefault(
-                candidate_id,
-                {
-                    "candidate_id": candidate_id,
-                    "status": "running",
-                    "stage": stage,
-                    "preview_image": "",
-                    "preview_mime_type": "",
-                    "preview_label": "",
-                    "result": None,
-                    "error": "",
-                    "updated_at": datetime.now().strftime("%H:%M:%S"),
-                },
-            )
-            snapshot["status"] = "completed" if "完成" in stage else "running"
-            snapshot["stage"] = stage
-            snapshot["updated_at"] = datetime.now().strftime("%H:%M:%S")
-        ts = datetime.now().strftime("%H:%M:%S")
-        line = f"[{ts}] {message}"
-        if job.status_history and job.status_history[-1] == line:
-            return
-        job.status_history.append(line)
-        if len(job.status_history) > GENERATION_STATUS_LINE_LIMIT:
-            job.status_history = job.status_history[-GENERATION_STATUS_LINE_LIMIT:]
+    job.status_history.append(line)
+    if len(job.status_history) > GENERATION_STATUS_LINE_LIMIT:
+        job.status_history = job.status_history[-GENERATION_STATUS_LINE_LIMIT:]
 
 
-def record_generation_candidate_event(job_id: str, event: dict | None) -> None:
-    job = get_generation_job(job_id)
-    if job is None or not isinstance(event, dict):
+def _append_refine_status_line(job: RefineJobState, event_dict: dict) -> None:
+    line = _render_event_status_line(event_dict)
+    if job.status_history and job.status_history[-1] == line:
         return
+    job.status_history.append(line)
+    if len(job.status_history) > REFINE_STATUS_LINE_LIMIT:
+        job.status_history = job.status_history[-REFINE_STATUS_LINE_LIMIT:]
 
-    candidate_id = str(event.get("candidate_id", "")).strip()
-    if not candidate_id:
-        return
 
-    with job.lock:
-        ts = datetime.now().strftime("%H:%M:%S")
-        snapshot = job.candidate_snapshots.setdefault(
-            candidate_id,
-            {
-                "candidate_id": candidate_id,
-                "status": "queued",
-                "stage": "等待开始",
-                "preview_image": "",
-                "preview_mime_type": "",
-                "preview_label": "",
-                "result": None,
-                "error": "",
-                "updated_at": ts,
-            },
-        )
-        kind = str(event.get("kind", "")).strip() or "event"
-        status_value = str(event.get("status", "")).strip()
-        stage_value = str(event.get("stage", "")).strip()
-        message = clean_text(event.get("message", "")) or f"候选 {candidate_id}: {kind}"
-
-        if status_value:
-            snapshot["status"] = status_value
-        if stage_value:
-            snapshot["stage"] = stage_value
-            job.candidate_stage_map[candidate_id] = stage_value
-        if event.get("preview_image"):
-            snapshot["preview_image"] = event["preview_image"]
-            snapshot["preview_mime_type"] = str(event.get("preview_mime_type", "image/png"))
-            snapshot["preview_label"] = str(event.get("preview_label", "") or stage_value or kind)
-        if event.get("error"):
-            snapshot["error"] = clean_text(event.get("error", ""))
-        if event.get("result") is not None:
-            snapshot["result"] = dict(event["result"])
-            snapshot["status"] = "completed"
-            if not snapshot.get("stage"):
-                snapshot["stage"] = "候选流程完成"
-        snapshot["updated_at"] = ts
-
-        timeline_event = {
-            "ts": ts,
+def _ensure_generation_candidate_snapshot(
+    job: GenerationJobState,
+    candidate_id: str,
+    ts: str,
+) -> dict:
+    return job.candidate_snapshots.setdefault(
+        candidate_id,
+        {
             "candidate_id": candidate_id,
-            "kind": kind,
-            "message": message,
-        }
-        if stage_value:
-            timeline_event["stage"] = stage_value
-        job.event_timeline.append(timeline_event)
-        if len(job.event_timeline) > GENERATION_EVENT_HISTORY_LIMIT:
-            job.event_timeline = job.event_timeline[-GENERATION_EVENT_HISTORY_LIMIT:]
+            "status": "queued",
+            "stage": "等待开始",
+            "preview_image": "",
+            "preview_mime_type": "",
+            "preview_label": "",
+            "result": None,
+            "error": "",
+            "updated_at": ts,
+        },
+    )
+
+
+def record_generation_job_event(job_id: str, event: dict | None) -> None:
+    job = get_generation_job(job_id)
+    if job is None or event is None:
+        return
+
+    payload = coerce_runtime_event(event, default_source="PaperBananaDemo").to_dict()
+    if not payload.get("job_type"):
+        payload["job_type"] = "generation"
+    payload["message"] = clean_text(payload.get("message", ""))
+    candidate_id = str(payload.get("candidate_id", "")).strip()
+    stage_value = str(payload.get("stage", "")).strip()
+    if not candidate_id or not stage_value:
+        parsed_candidate = extract_generation_candidate_stage(payload.get("message", ""))
+        if parsed_candidate:
+            parsed_id, parsed_stage = parsed_candidate
+            candidate_id = candidate_id or parsed_id
+            stage_value = stage_value or parsed_stage
+            payload["candidate_id"] = candidate_id
+            payload["stage"] = stage_value
+    if not payload.get("ts"):
+        payload["ts"] = datetime.now().strftime("%H:%M:%S")
+
+    with job.lock:
+        job.event_history.append(dict(payload))
+        if len(job.event_history) > GENERATION_EVENT_HISTORY_LIMIT:
+            job.event_history = job.event_history[-GENERATION_EVENT_HISTORY_LIMIT:]
+        _append_generation_status_line(job, payload)
+
+        if candidate_id:
+            snapshot = _ensure_generation_candidate_snapshot(job, candidate_id, payload["ts"])
+            status_value = str(payload.get("status", "")).strip()
+            if status_value:
+                snapshot["status"] = status_value
+            if stage_value:
+                snapshot["stage"] = stage_value
+                job.candidate_stage_map[candidate_id] = stage_value
+            if payload.get("preview_image"):
+                snapshot["preview_image"] = payload["preview_image"]
+                snapshot["preview_mime_type"] = str(payload.get("preview_mime_type", "image/png"))
+                snapshot["preview_label"] = str(payload.get("preview_label", "") or stage_value or payload.get("kind", "preview"))
+            if payload.get("kind") == "error":
+                snapshot["status"] = "failed"
+                snapshot["error"] = clean_text(payload.get("details") or payload.get("message", ""))
+            elif stage_value:
+                if "等待" in stage_value:
+                    snapshot["status"] = snapshot.get("status") or "queued"
+                elif "失败" in stage_value:
+                    snapshot["status"] = "failed"
+                elif "完成" in stage_value:
+                    snapshot["status"] = "completed"
+                elif snapshot.get("status") in {"", "queued"}:
+                    snapshot["status"] = "running"
+            snapshot["updated_at"] = payload["ts"]
+
+
+def append_generation_job_status(job_id: str, message: str) -> None:
+    if not message:
+        return
+    record_generation_job_event(
+        job_id,
+        create_runtime_event(
+            level="INFO",
+            kind="job",
+            source="PaperBananaDemo",
+            message=message,
+            job_type="generation",
+        ).to_dict(),
+    )
 
 
 def append_generation_job_result(job_id: str, result_data: dict) -> None:
@@ -897,30 +1016,46 @@ def request_generation_job_cancel(job_id: str) -> None:
     append_generation_job_status(job_id, "[生成] 已收到停止请求，当前进行中的候选会继续完成，未开始的候选将被跳过。")
 
 
-class GenerationJobLogHandler(logging.Handler):
-    """将关键运行日志桥接到生成任务状态历史，便于页面同步展示。"""
+class JobEventHandler(logging.Handler):
+    """Bridge selected logger output into background job event history."""
 
-    def __init__(self, job_id: str):
+    def __init__(self, job_id: str, job_type: str, logger_names: set[str]):
         super().__init__(level=logging.INFO)
         self.job_id = job_id
-        self.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
+        self.job_type = job_type
+        self.logger_names = set(logger_names)
 
     def emit(self, record: logging.LogRecord) -> None:
-        if record.name not in GENERATION_LOGGER_NAMES:
+        if record.name not in self.logger_names:
+            return
+        if getattr(record, "paperbanana_event", None) is not None:
             return
         if record.levelno < logging.INFO:
             return
         try:
-            message = self.format(record)
+            payload = runtime_event_from_log_record(record).to_dict()
         except Exception:
-            message = f"[{record.name}] {record.getMessage()}"
-        append_generation_job_status(self.job_id, safe_log_text(message, max_len=400))
+            payload = create_runtime_event(
+                ts=datetime.fromtimestamp(record.created).strftime("%H:%M:%S"),
+                level=record.levelno,
+                kind="error" if record.levelno >= logging.ERROR else "warning" if record.levelno >= logging.WARNING else "job",
+                source=record.name,
+                message=record.getMessage(),
+                job_type=self.job_type,
+            ).to_dict()
+        if not payload.get("job_type"):
+            payload["job_type"] = self.job_type
+        if self.job_type == "generation":
+            record_generation_job_event(self.job_id, payload)
+        else:
+            record_refine_job_event(self.job_id, payload)
 
 
 @contextmanager
-def capture_generation_job_logs(job_id: str):
-    handler = GenerationJobLogHandler(job_id)
-    logger_objects = [logging.getLogger(name) for name in GENERATION_LOGGER_NAMES]
+def capture_job_logs(job_id: str, job_type: str):
+    logger_names = GENERATION_LOGGER_NAMES if job_type == "generation" else REFINE_LOGGER_NAMES
+    handler = JobEventHandler(job_id, job_type, logger_names)
+    logger_objects = [logging.getLogger(name) for name in logger_names]
     original_levels = {logger_obj: logger_obj.level for logger_obj in logger_objects}
     for logger_obj in logger_objects:
         logger_obj.addHandler(handler)
@@ -1510,18 +1645,38 @@ def clear_refine_job(job_id: str) -> None:
         REFINE_JOBS.pop(job_id, None)
 
 
-def append_refine_job_status(job_id: str, message: str) -> None:
+def record_refine_job_event(job_id: str, event: dict | None) -> None:
     job = get_refine_job(job_id)
-    if job is None or not message:
+    if job is None or event is None:
         return
+
+    payload = coerce_runtime_event(event, default_source="PaperBananaDemo").to_dict()
+    if not payload.get("job_type"):
+        payload["job_type"] = "refine"
+    payload["message"] = clean_text(payload.get("message", ""))
+    if not payload.get("ts"):
+        payload["ts"] = datetime.now().strftime("%H:%M:%S")
+
     with job.lock:
-        ts = datetime.now().strftime("%H:%M:%S")
-        line = f"[{ts}] {message}"
-        if job.status_history and job.status_history[-1] == line:
-            return
-        job.status_history.append(line)
-        if len(job.status_history) > REFINE_STATUS_LINE_LIMIT:
-            job.status_history = job.status_history[-REFINE_STATUS_LINE_LIMIT:]
+        job.event_history.append(dict(payload))
+        if len(job.event_history) > REFINE_EVENT_HISTORY_LIMIT:
+            job.event_history = job.event_history[-REFINE_EVENT_HISTORY_LIMIT:]
+        _append_refine_status_line(job, payload)
+
+
+def append_refine_job_status(job_id: str, message: str) -> None:
+    if not message:
+        return
+    record_refine_job_event(
+        job_id,
+        create_runtime_event(
+            level="INFO",
+            kind="job",
+            source="PaperBananaDemo",
+            message=message,
+            job_type="refine",
+        ).to_dict(),
+    )
 
 
 def update_refine_job_progress(job_id: str, done_count: int, total_count: int) -> None:
@@ -1625,17 +1780,26 @@ def start_generation_background_job(
         estimated_batches=estimated_batches,
     )
     _store_generation_job(job)
-    append_generation_job_status(
+    record_generation_job_event(
         job_id,
-        (
-            f"[生成] task={normalized_task_name} dataset={dataset_name} "
-            f"candidates={requested_candidates} provider={runtime_settings.provider}"
-        ),
+        create_runtime_event(
+            level="INFO",
+            kind="job",
+            source="PaperBananaDemo",
+            message=(
+                f"[生成] 已创建后台任务：任务={normalized_task_name} | 数据集={dataset_name} | "
+                f"候选={requested_candidates} | Provider={runtime_settings.provider}"
+            ),
+            job_type="generation",
+            provider=runtime_settings.provider,
+            model=runtime_settings.model_name,
+            status="running",
+        ).to_dict(),
     )
 
     def worker():
         started_at = time.perf_counter()
-        with capture_generation_job_logs(job_id):
+        with capture_job_logs(job_id, "generation"):
             try:
                 input_data_list = create_sample_inputs(
                     content=content,
@@ -1654,7 +1818,7 @@ def start_generation_background_job(
                     append_generation_job_status(job_id, message)
 
                 def on_event(event: dict):
-                    record_generation_candidate_event(job_id, event)
+                    record_generation_job_event(job_id, event)
 
                 def on_result(result_data: dict):
                     append_generation_job_result(job_id, result_data)
@@ -1702,15 +1866,33 @@ def start_generation_background_job(
                         timestamp_str=job.created_at,
                         run_status=run_status,
                     )
-                    append_generation_job_status(
+                    record_generation_job_event(
                         job_id,
-                        (
-                            f"[生成] 结果已保存：JSON={Path(artifact_payload.get('json_file', '')).name or 'N/A'} | "
-                            f"Bundle={Path(artifact_payload.get('bundle_file', '')).name or 'N/A'}"
-                        ),
+                        create_runtime_event(
+                            level="INFO",
+                            kind="artifact",
+                            source="PaperBananaDemo",
+                            message=(
+                                f"[生成] 结果已保存：JSON={Path(artifact_payload.get('json_file', '')).name or 'N/A'} | "
+                                f"Bundle={Path(artifact_payload.get('bundle_file', '')).name or 'N/A'}"
+                            ),
+                            job_type="generation",
+                            status=run_status,
+                        ).to_dict(),
                     )
                 except Exception as save_err:
-                    append_generation_job_status(job_id, f"[生成][WARN] 结果写盘失败: {save_err}")
+                    record_generation_job_event(
+                        job_id,
+                        create_runtime_event(
+                            level="WARNING",
+                            kind="warning",
+                            source="PaperBananaDemo",
+                            message="[生成] 结果写盘失败",
+                            job_type="generation",
+                            status="running",
+                            details=safe_log_text(save_err),
+                        ).to_dict(),
+                    )
 
                 with job.lock:
                     job.results = results
@@ -1724,19 +1906,37 @@ def start_generation_background_job(
                     job.estimated_batches = math.ceil(requested_candidates / max(1, used_concurrency))
                     job.elapsed_seconds = time.perf_counter() - started_at
                     job.status = run_status
-                append_generation_job_status(
+                record_generation_job_event(
                     job_id,
-                    (
-                        f"[生成] finished status={run_status} "
-                        f"completed={len(results)}/{requested_candidates}"
-                    ),
+                    create_runtime_event(
+                        level="INFO",
+                        kind="job",
+                        source="PaperBananaDemo",
+                        message=(
+                            f"[生成] 后台任务结束：状态={run_status} | "
+                            f"完成={len(results)}/{requested_candidates}"
+                        ),
+                        job_type="generation",
+                        status=run_status,
+                    ).to_dict(),
                 )
             except Exception as exc:
                 with job.lock:
                     job.status = "failed"
                     job.error = f"{type(exc).__name__}: {exc}"
                     job.elapsed_seconds = time.perf_counter() - started_at
-                append_generation_job_status(job_id, f"[生成] failed: {job.error}")
+                record_generation_job_event(
+                    job_id,
+                    create_runtime_event(
+                        level="ERROR",
+                        kind="error",
+                        source="PaperBananaDemo",
+                        message="[生成] 后台任务失败",
+                        job_type="generation",
+                        status="failed",
+                        details=job.error,
+                    ).to_dict(),
+                )
 
     job.future = GENERATION_JOB_EXECUTOR.submit(worker)
     return job_id
@@ -1775,41 +1975,58 @@ async def process_parallel_candidates(
         exp_mode=exp_mode,
         provider=provider,
     )
-
-    print(f"\n{'='*60}")
-    print(f"[DEBUG] process_parallel_candidates 开始")
-    print(f"[DEBUG]   task={task_name}, provider={provider}, model={model_name}, image_model={image_model_name}")
-    print(f"[DEBUG]   exp_mode={exp_mode}, retrieval={retrieval_setting}, candidates={total_candidates}")
-    print(f"[DEBUG]   concurrency_mode={concurrency_mode}, max_concurrent={max_concurrent}, effective={effective_concurrent}")
-    print(f"[DEBUG]   api_key={'已设置 (' + api_key[:8] + '...)' if api_key else '未设置'}")
-    print(f"{'='*60}")
-    emit_generation_status(
-        status_callback,
-        (
+    logger.debug(
+        "process_parallel_candidates start | task=%s provider=%s model=%s image_model=%s mode=%s retrieval=%s candidates=%s concurrency=%s/%s -> %s",
+        task_name,
+        provider,
+        model_name,
+        image_model_name,
+        exp_mode,
+        retrieval_setting,
+        total_candidates,
+        concurrency_mode,
+        max_concurrent,
+        effective_concurrent,
+    )
+    emit_generation_event(
+        message=(
             f"[生成] 已启动：task={task_name} | provider={provider} | "
             f"流水线={exp_mode} | 检索={retrieval_setting} | 候选={total_candidates}"
         ),
+        event_callback=event_callback,
+        status_callback=status_callback,
+        kind="job",
+        level="INFO",
+        status="running",
+        provider=provider,
+        model=model_name,
     )
-    emit_generation_status(
-        status_callback,
-        (
+    emit_generation_event(
+        message=(
             f"[生成] 运行配置：文本模型={model_name or 'N/A'} | "
             f"图像模型={image_model_name or 'N/A'} | 有效并发={effective_concurrent}"
         ),
+        event_callback=event_callback,
+        status_callback=status_callback,
+        kind="job",
+        level="INFO",
+        status="running",
+        provider=provider,
+        model=model_name or image_model_name,
     )
 
     if progress_callback:
         try:
             progress_callback(0, total_candidates, effective_concurrent)
         except Exception as cb_error:
-            print(f"[DEBUG] [WARN] 进度回调失败(初始化): {cb_error}")
-    if status_callback:
+            logger.warning("生成进度回调初始化失败: %s", safe_log_text(cb_error))
+    if status_callback and event_callback is None:
         try:
             status_callback(
                 f"任务启动：候选数={total_candidates}, 并发={effective_concurrent}, 流水线={exp_mode}"
             )
         except Exception as cb_error:
-            print(f"[DEBUG] [WARN] 状态回调失败(初始化): {cb_error}")
+            logger.warning("生成文本状态回调初始化失败: %s", safe_log_text(cb_error))
 
     from utils import generation_utils
     runtime_settings = resolve_runtime_settings(
@@ -1824,11 +2041,20 @@ async def process_parallel_candidates(
     )
     runtime_context = build_runtime_context(
         runtime_settings,
-        status_hook=status_callback,
+        event_hook=event_callback,
+        status_hook=status_callback if event_callback is None else None,
         cancel_check=cancel_check,
     )
     if not runtime_settings.api_key:
-        print(f"[DEBUG] [WARN] 未提供 API Key，Provider 可能无法正常工作")
+        emit_generation_event(
+            message="[生成] 未提供 API Key，Provider 可能无法正常工作",
+            event_callback=event_callback,
+            status_callback=status_callback,
+            kind="warning",
+            level="WARNING",
+            status="running",
+            provider=runtime_settings.provider,
+        )
 
     # 创建实验配置
     exp_config = config.ExpConfig(
@@ -1845,16 +2071,18 @@ async def process_parallel_candidates(
         provider=runtime_settings.provider,
         work_dir=Path(__file__).parent,
     )
-    print(
-        f"[DEBUG] ExpConfig 已创建: task={exp_config.task_name}, provider={exp_config.provider}, "
-        f"model={exp_config.model_name}, image_model={exp_config.image_model_name}"
-    )
-    emit_generation_status(
-        status_callback,
-        (
+    emit_generation_event(
+        message=(
             f"[生成] ExpConfig 就绪：provider={exp_config.provider} | "
             f"text={exp_config.model_name or 'N/A'} | image={exp_config.image_model_name or 'N/A'}"
         ),
+        event_callback=event_callback,
+        status_callback=status_callback,
+        kind="job",
+        level="INFO",
+        status="running",
+        provider=exp_config.provider,
+        model=exp_config.model_name,
     )
 
     # 初始化处理器及所有代理
@@ -1875,12 +2103,21 @@ async def process_parallel_candidates(
 
     try:
         with generation_utils.use_runtime_context(runtime_context):
-            emit_generation_status(status_callback, "[生成] 处理器已就绪，开始并发调度候选")
+            emit_generation_event(
+                message="[生成] 处理器已就绪，开始并发调度候选",
+                event_callback=event_callback,
+                status_callback=status_callback,
+                kind="job",
+                level="INFO",
+                status="running",
+                provider=exp_config.provider,
+                model=exp_config.model_name,
+            )
             async for result_data in processor.process_queries_batch(
                 data_list,
                 max_concurrent=concurrent_num,
                 do_eval=False,
-                status_callback=status_callback,
+                status_callback=status_callback if event_callback is None else None,
                 event_callback=event_callback,
                 cancel_check=cancel_check,
             ):
@@ -1889,12 +2126,12 @@ async def process_parallel_candidates(
                     try:
                         result_callback(result_data)
                     except Exception as cb_error:
-                        print(f"[DEBUG] [WARN] 结果回调失败: {cb_error}")
+                        logger.warning("生成结果回调失败: %s", safe_log_text(cb_error))
                 if progress_callback:
                     try:
                         progress_callback(len(results), total_candidates, effective_concurrent)
                     except Exception as cb_error:
-                        print(f"[DEBUG] [WARN] 进度回调失败(更新): {cb_error}")
+                        logger.warning("生成进度回调更新失败: %s", safe_log_text(cb_error))
     finally:
         await generation_utils.close_runtime_context(runtime_context)
         processor.shutdown()
@@ -1910,6 +2147,7 @@ async def refine_image_with_nanoviz(
     provider="evolink",
     image_model_name="",
     task_id: int = 1,
+    event_callback: Optional[Callable[[dict], None]] = None,
     status_callback: Optional[Callable[[str], None]] = None,
     input_mime_type: str = "image/png",
     max_attempts: Optional[int] = None,
@@ -1950,7 +2188,8 @@ async def refine_image_with_nanoviz(
     )
     active_runtime_context = runtime_context or build_runtime_context(
         runtime_settings,
-        status_hook=status_callback,
+        event_hook=event_callback,
+        status_hook=status_callback if event_callback is None else None,
         cancel_check=cancel_check,
     )
     owns_runtime_context = runtime_context is None
@@ -1959,9 +2198,15 @@ async def refine_image_with_nanoviz(
         with generation_utils.use_runtime_context(active_runtime_context):
             while attempt < attempt_limit:
                 if cancel_check and cancel_check():
-                    emit_refine_status(
-                        status_callback,
-                        f"[精修][{task_prefix}] cancelled before attempt={attempt + 1}",
+                    emit_refine_event(
+                        message=f"[精修][任务 {task_id}] 已取消，未开始第 {attempt + 1} 次尝试",
+                        event_callback=event_callback,
+                        status_callback=status_callback,
+                        kind="warning",
+                        level="WARNING",
+                        status="cancelled",
+                        provider=provider,
+                        model=runtime_settings.image_model_name,
                     )
                     return None, "⛔ 已取消精修任务"
                 elapsed = time.perf_counter() - started_at
@@ -1973,9 +2218,15 @@ async def refine_image_with_nanoviz(
                         # ====== Gemini 路径：复用统一的阶梯降级与可取消无限重试 ======
                         from google.genai import types
 
-                        emit_refine_status(
-                            status_callback,
-                            f"[精修][{task_prefix}] start ladder-retry model={runtime_settings.image_model_name}",
+                        emit_refine_event(
+                            message=f"[精修][任务 {task_id}] 开始请求，模型={runtime_settings.image_model_name}",
+                            event_callback=event_callback,
+                            status_callback=status_callback,
+                            kind="job",
+                            level="INFO",
+                            status="running",
+                            provider=provider,
+                            model=runtime_settings.image_model_name,
                         )
                         response_list = await generation_utils.call_gemini_with_retry_async(
                             model_name=runtime_settings.image_model_name,
@@ -2008,15 +2259,27 @@ async def refine_image_with_nanoviz(
                         )
 
                         if response_list and response_list[0] and response_list[0] != "Error":
-                            emit_refine_status(
-                                status_callback,
-                                f"[精修][{task_prefix}] success model={runtime_settings.image_model_name}",
+                            emit_refine_event(
+                                message=f"[精修][任务 {task_id}] 已成功生成结果，模型={runtime_settings.image_model_name}",
+                                event_callback=event_callback,
+                                status_callback=status_callback,
+                                kind="job",
+                                level="INFO",
+                                status="completed",
+                                provider=provider,
+                                model=runtime_settings.image_model_name,
                             )
                             return base64.b64decode(response_list[0]), "✅ 图像精修成功！"
 
-                        emit_refine_status(
-                            status_callback,
-                            f"[精修][{task_prefix}] encountered a non-retryable Gemini error",
+                        emit_refine_event(
+                            message=f"[精修][任务 {task_id}] Gemini 返回不可恢复错误",
+                            event_callback=event_callback,
+                            status_callback=status_callback,
+                            kind="error",
+                            level="ERROR",
+                            status="failed",
+                            provider=provider,
+                            model=runtime_settings.image_model_name,
                         )
                         return None, "❌ 图像精修失败：Gemini 返回不可恢复错误"
 
@@ -2029,9 +2292,16 @@ async def refine_image_with_nanoviz(
                             continue
 
                         image_model = runtime_settings.image_model_name
-                        emit_refine_status(
-                            status_callback,
-                            f"[精修][{task_prefix}] attempt={attempt} model={image_model} timeout={int(timeout_seconds)}s",
+                        emit_refine_event(
+                            message=f"[精修][任务 {task_id}] 第 {attempt} 次尝试，模型={image_model}，超时={int(timeout_seconds)}s",
+                            event_callback=event_callback,
+                            status_callback=status_callback,
+                            kind="job",
+                            level="INFO",
+                            status="running",
+                            provider=provider,
+                            model=image_model,
+                            attempt=attempt,
                         )
 
                         # 步骤 1：上传原始图片到 Evolink 文件服务
@@ -2040,10 +2310,12 @@ async def refine_image_with_nanoviz(
                             image_b64,
                             media_type=normalized_mime_type,
                         )
-                        try:
-                            print(f"[精修] attempt={attempt}, uploaded_ref={safe_log_text(ref_image_url[:80])}...")
-                        except Exception:
-                            pass
+                        logger.debug(
+                            "refine upload complete | task=%s attempt=%s ref=%s",
+                            task_prefix,
+                            attempt,
+                            safe_log_text(ref_image_url[:80]),
+                        )
 
                         # 步骤 2：图像生成 API（传入参考图 URL）
                         result = await asyncio.wait_for(
@@ -2061,9 +2333,16 @@ async def refine_image_with_nanoviz(
 
                         if result and result[0] and result[0] != "Error":
                             edited_image_data = base64.b64decode(result[0])
-                            emit_refine_status(
-                                status_callback,
-                                f"[精修][{task_prefix}] success on attempt={attempt} model={image_model}",
+                            emit_refine_event(
+                                message=f"[精修][{task_prefix}] success on attempt={attempt} model={image_model}",
+                                event_callback=event_callback,
+                                status_callback=status_callback,
+                                kind="job",
+                                level="INFO",
+                                status="completed",
+                                provider=provider,
+                                model=image_model,
+                                attempt=attempt,
                             )
                             return edited_image_data, f"✅ 图像精修成功！（第 {attempt} 次尝试）"
 
@@ -2075,14 +2354,18 @@ async def refine_image_with_nanoviz(
                         f"(attempt={attempt}, {task_prefix})"
                     )
                     delay = min(max(sleep_seconds, 3.0), 20.0)
-                    emit_refine_status(
-                        status_callback,
-                        f"[精修][{task_prefix}] timeout, wait {delay:.1f}s then retry",
+                    emit_refine_event(
+                        message=f"[精修][任务 {task_id}] 请求超时，{delay:.1f}s 后重试",
+                        event_callback=event_callback,
+                        status_callback=status_callback,
+                        kind="retry",
+                        level="WARNING",
+                        status="retrying",
+                        provider=provider,
+                        model=runtime_settings.image_model_name,
+                        attempt=attempt,
+                        details=err_text,
                     )
-                    try:
-                        print(f"[精修][重试] {safe_log_text(err_text, max_len=1200)}")
-                    except Exception:
-                        pass
                     await asyncio.sleep(delay)
                     sleep_seconds = min(max(delay * 1.2, sleep_seconds * 1.25), 30.0)
                 except Exception as e:
@@ -2095,10 +2378,7 @@ async def refine_image_with_nanoviz(
                         try:
                             generation_utils.reinitialize_runtime_context(active_runtime_context)
                         except Exception as reinit_error:
-                            try:
-                                print(f"[精修][WARN] socket 自愈重建失败: {safe_log_text(reinit_error)}")
-                            except Exception:
-                                pass
+                            logger.warning("精修 socket 自愈重建失败: %s", safe_log_text(reinit_error))
 
                     suggested_delay = extract_retry_delay_seconds(error_text)
                     delay = min(sleep_seconds, 20.0)
@@ -2106,30 +2386,47 @@ async def refine_image_with_nanoviz(
                         delay = min(max(delay, suggested_delay), 60.0)
                     if "limit: 0" in lower_error:
                         delay = max(delay, 30.0)
-                    emit_refine_status(
-                        status_callback,
-                        f"[精修][{task_prefix}] failed attempt={attempt}, wait {delay:.1f}s | {error_text[:160]}",
+                    emit_refine_event(
+                        message=f"[精修][任务 {task_id}] 第 {attempt} 次失败，{delay:.1f}s 后重试 | {error_text[:160]}",
+                        event_callback=event_callback,
+                        status_callback=status_callback,
+                        kind="retry",
+                        level="WARNING",
+                        status="retrying",
+                        provider=provider,
+                        model=runtime_settings.image_model_name,
+                        attempt=attempt,
+                        details=error_text,
                     )
-                    try:
-                        print(f"[精修][重试] attempt={attempt}, err={error_text}")
-                    except Exception:
-                        pass
                     await asyncio.sleep(delay)
                     sleep_seconds = min(max(delay * 1.1, sleep_seconds * 1.25), 30.0)
 
         elapsed = time.perf_counter() - started_at
         if cancel_check and cancel_check():
-            emit_refine_status(
-                status_callback,
-                f"[精修][{task_prefix}] cancelled after {elapsed:.1f}s",
+            emit_refine_event(
+                message=f"[精修][任务 {task_id}] 已取消，累计耗时 {elapsed:.1f}s",
+                event_callback=event_callback,
+                status_callback=status_callback,
+                kind="warning",
+                level="WARNING",
+                status="cancelled",
+                provider=provider,
+                model=runtime_settings.image_model_name,
             )
             return None, "⛔ 已取消精修任务"
         failure_message = (
             f"❌ 图像精修失败：已达到重试上限（attempts={attempt_limit}, elapsed={elapsed:.1f}s）"
         )
-        emit_refine_status(
-            status_callback,
-            f"[精修][{task_prefix}] exhausted attempts={attempt_limit} elapsed={elapsed:.1f}s",
+        emit_refine_event(
+            message=f"[精修][任务 {task_id}] 已达到重试上限，累计耗时 {elapsed:.1f}s",
+            event_callback=event_callback,
+            status_callback=status_callback,
+            kind="error",
+            level="ERROR",
+            status="failed",
+            provider=provider,
+            model=runtime_settings.image_model_name,
+            details=failure_message,
         )
         return None, failure_message
     finally:
@@ -2148,6 +2445,7 @@ async def refine_images_with_count(
     image_model_name="",
     input_mime_type="image/png",
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    event_callback: Optional[Callable[[dict], None]] = None,
     status_callback: Optional[Callable[[str], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ):
@@ -2164,7 +2462,8 @@ async def refine_images_with_count(
     )
     runtime_context = build_runtime_context(
         runtime_settings,
-        status_hook=status_callback,
+        event_hook=event_callback,
+        status_hook=status_callback if event_callback is None else None,
         cancel_check=cancel_check,
     )
     semaphore = asyncio.Semaphore(min(safe_count, 3 if provider == "gemini" else 2))
@@ -2191,6 +2490,7 @@ async def refine_images_with_count(
                                 provider=runtime_settings.provider,
                                 image_model_name=runtime_settings.image_model_name,
                                 task_id=task_idx + 1,
+                                event_callback=event_callback,
                                 status_callback=status_callback,
                                 input_mime_type=input_mime_type,
                                 cancel_check=cancel_check,
@@ -2217,13 +2517,16 @@ async def refine_images_with_count(
                     try:
                         progress_callback(done_count, safe_count)
                     except Exception as cb_error:
-                        try:
-                            print(f"[DEBUG] [WARN] 精修进度回调失败: {safe_log_text(cb_error)}")
-                        except Exception:
-                            pass
-                emit_refine_status(
-                    status_callback,
-                    f"[精修] completed {done_count}/{safe_count} (task#{task_idx + 1})",
+                        logger.warning("精修进度回调失败: %s", safe_log_text(cb_error))
+                emit_refine_event(
+                    message=f"[精修] 已完成 {done_count}/{safe_count}（任务 {task_idx + 1}）",
+                    event_callback=event_callback,
+                    status_callback=status_callback,
+                    kind="job",
+                    level="INFO",
+                    status="running",
+                    provider=runtime_settings.provider,
+                    model=runtime_settings.image_model_name,
                 )
 
             return results
@@ -2262,83 +2565,141 @@ def start_refine_background_job(
         original_image_bytes=image_bytes,
     )
     _store_refine_job(job)
-    append_refine_job_status(job_id, f"[精修] input mime={input_mime_type}, bytes={len(image_bytes)}")
-    append_refine_job_status(
+    record_refine_job_event(
         job_id,
-        (
-            f"[精修] 已启动：provider={runtime_settings.provider} | "
-            f"model={runtime_settings.image_model_name} | 分辨率={image_size} | "
-            f"宽高比={aspect_ratio} | 目标张数={int(num_images)}"
-        ),
+        create_runtime_event(
+            level="INFO",
+            kind="job",
+            source="PaperBananaDemo",
+            message=f"[精修] 输入图像：格式={input_mime_type} | 大小={len(image_bytes)} bytes",
+            job_type="refine",
+            provider=runtime_settings.provider,
+            model=runtime_settings.image_model_name,
+            status="running",
+        ).to_dict(),
+    )
+    record_refine_job_event(
+        job_id,
+        create_runtime_event(
+            level="INFO",
+            kind="job",
+            source="PaperBananaDemo",
+            message=(
+                f"[精修] 已启动：provider={runtime_settings.provider} | "
+                f"model={runtime_settings.image_model_name} | 分辨率={image_size} | "
+                f"宽高比={aspect_ratio} | 目标张数={int(num_images)}"
+            ),
+            job_type="refine",
+            provider=runtime_settings.provider,
+            model=runtime_settings.image_model_name,
+            status="running",
+        ).to_dict(),
     )
 
     def worker():
         started_at = time.perf_counter()
-        try:
-            def on_progress(done_count: int, total_count: int):
-                update_refine_job_progress(job_id, done_count, total_count)
+        with capture_job_logs(job_id, "refine"):
+            try:
+                def on_progress(done_count: int, total_count: int):
+                    update_refine_job_progress(job_id, done_count, total_count)
 
-            def on_status(message: str):
-                append_refine_job_status(job_id, message)
+                def on_status(message: str):
+                    append_refine_job_status(job_id, message)
 
-            refined_results = asyncio.run(
-                refine_images_with_count(
-                    image_bytes=image_bytes,
-                    edit_prompt=edit_prompt,
-                    num_images=int(num_images),
-                    aspect_ratio=aspect_ratio,
-                    image_size=image_size,
-                    api_key=runtime_settings.api_key,
-                    provider=runtime_settings.provider,
-                    image_model_name=runtime_settings.image_model_name,
-                    input_mime_type=input_mime_type,
-                    progress_callback=on_progress,
-                    status_callback=on_status,
-                    cancel_check=job.cancel_event.is_set,
-                )
-            )
+                def on_event(event: dict):
+                    record_refine_job_event(job_id, event)
 
-            refined_images = []
-            failed_refine_results = []
-            for idx, result_item in enumerate(refined_results):
-                if not result_item:
-                    failed_refine_results.append(
-                        {"index": idx + 1, "message": "❌ 未返回任何结果"}
+                refined_results = asyncio.run(
+                    refine_images_with_count(
+                        image_bytes=image_bytes,
+                        edit_prompt=edit_prompt,
+                        num_images=int(num_images),
+                        aspect_ratio=aspect_ratio,
+                        image_size=image_size,
+                        api_key=runtime_settings.api_key,
+                        provider=runtime_settings.provider,
+                        image_model_name=runtime_settings.image_model_name,
+                        input_mime_type=input_mime_type,
+                        progress_callback=on_progress,
+                        event_callback=on_event,
+                        status_callback=on_status,
+                        cancel_check=job.cancel_event.is_set,
                     )
-                    continue
-                refined_bytes, message = result_item
-                if refined_bytes:
-                    refined_images.append({
-                        "index": idx + 1,
-                        "bytes": refined_bytes,
-                        "message": message,
-                    })
-                else:
-                    failed_refine_results.append({
-                        "index": idx + 1,
-                        "message": message,
-                    })
+                )
 
-            with job.lock:
-                job.refined_images = refined_images
-                job.failed_results = failed_refine_results
-                job.progress_done = max(job.progress_done, len(refined_images) + len(failed_refine_results))
-                job.progress_total = max(job.progress_total, int(num_images))
-                job.elapsed_seconds = time.perf_counter() - started_at
-                if job.cancel_requested:
-                    job.status = "cancelled"
-                else:
-                    job.status = "completed"
-            append_refine_job_status(
-                job_id,
-                f"[精修] finished status={job.status} success={len(refined_images)} failed={len(failed_refine_results)}",
-            )
-        except Exception as exc:
-            with job.lock:
-                job.status = "failed"
-                job.error = f"{type(exc).__name__}: {exc}"
-                job.elapsed_seconds = time.perf_counter() - started_at
-            append_refine_job_status(job_id, f"[精修] failed: {job.error}")
+                refined_images = []
+                failed_refine_results = []
+                for idx, result_item in enumerate(refined_results):
+                    if not result_item:
+                        failed_refine_results.append(
+                            {"index": idx + 1, "message": "❌ 未返回任何结果"}
+                        )
+                        continue
+                    refined_bytes, message = result_item
+                    if refined_bytes:
+                        refined_images.append({
+                            "index": idx + 1,
+                            "bytes": refined_bytes,
+                            "message": message,
+                        })
+                    else:
+                        failed_refine_results.append({
+                            "index": idx + 1,
+                            "message": message,
+                        })
+
+                with job.lock:
+                    job.refined_images = refined_images
+                    job.failed_results = failed_refine_results
+                    job.progress_done = max(job.progress_done, len(refined_images) + len(failed_refine_results))
+                    job.progress_total = max(job.progress_total, int(num_images))
+                    job.elapsed_seconds = time.perf_counter() - started_at
+                    if job.cancel_requested:
+                        job.status = "cancelled"
+                    elif refined_images:
+                        job.status = "completed"
+                    else:
+                        job.status = "failed"
+                        if not job.error and failed_refine_results:
+                            job.error = "; ".join(
+                                str(item.get("message", "未知精修错误"))
+                                for item in failed_refine_results[:3]
+                            )
+                record_refine_job_event(
+                    job_id,
+                    create_runtime_event(
+                        level="INFO",
+                        kind="job",
+                        source="PaperBananaDemo",
+                        message=(
+                            f"[精修] 后台任务结束：状态={job.status} | "
+                            f"成功={len(refined_images)} | 失败={len(failed_refine_results)}"
+                        ),
+                        job_type="refine",
+                        provider=runtime_settings.provider,
+                        model=runtime_settings.image_model_name,
+                        status=job.status,
+                    ).to_dict(),
+                )
+            except Exception as exc:
+                with job.lock:
+                    job.status = "failed"
+                    job.error = f"{type(exc).__name__}: {exc}"
+                    job.elapsed_seconds = time.perf_counter() - started_at
+                record_refine_job_event(
+                    job_id,
+                    create_runtime_event(
+                        level="ERROR",
+                        kind="error",
+                        source="PaperBananaDemo",
+                        message="[精修] 后台任务失败",
+                        job_type="refine",
+                        provider=runtime_settings.provider,
+                        model=runtime_settings.image_model_name,
+                        status="failed",
+                        details=job.error,
+                    ).to_dict(),
+                )
 
     job.future = REFINE_JOB_EXECUTOR.submit(worker)
     return job_id
@@ -2369,7 +2730,7 @@ def display_candidate_result(result, candidate_id, exp_mode, task_name="diagram"
         if img:
             st.image(
                 img,
-                use_container_width=True,
+                width="stretch",
                 caption=f"候选方案 {candidate_id}（{task_config['final_caption']}）",
             )
 
@@ -2382,7 +2743,7 @@ def display_candidate_result(result, candidate_id, exp_mode, task_name="diagram"
                 file_name=f"candidate_{candidate_id}.png",
                 mime="image/png",
                 key=f"download_candidate_{candidate_id}",
-                use_container_width=True
+                width="stretch"
             )
         else:
             st.error(f"候选方案 {candidate_id} 的图像解码失败")
@@ -2406,7 +2767,7 @@ def display_candidate_result(result, candidate_id, exp_mode, task_name="diagram"
                 file_name=f"candidate_{candidate_id}.py",
                 mime="text/x-python",
                 key=f"download_candidate_code_{candidate_id}",
-                use_container_width=True,
+                width="stretch",
             )
 
     action_column_count = 2 if task_name == "plot" and final_code_key and result.get(final_code_key) else 1
@@ -2415,7 +2776,7 @@ def display_candidate_result(result, candidate_id, exp_mode, task_name="diagram"
         if st.button(
             "✨ 送去精修",
             key=f"stage_candidate_for_refine_{task_name}_{candidate_id}",
-            use_container_width=True,
+            width="stretch",
         ):
             if stage_candidate_for_refine(
                 result,
@@ -2431,7 +2792,7 @@ def display_candidate_result(result, candidate_id, exp_mode, task_name="diagram"
             if st.button(
                 "↺ 载入代码重渲染",
                 key=f"stage_plot_rerender_{candidate_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 if stage_plot_code_for_rerender(
                     result,
@@ -2455,7 +2816,7 @@ def display_candidate_result(result, candidate_id, exp_mode, task_name="diagram"
                 # 展示该阶段的图像
                 stage_img = base64_to_image(result.get(stage['image_key']))
                 if stage_img:
-                    st.image(stage_img, use_container_width=True)
+                    st.image(stage_img, width="stretch")
 
                 # 展示描述
                 if stage['desc_key'] in result:
@@ -2514,13 +2875,13 @@ def render_plot_rerender_workspace() -> None:
 
     action_col1, action_col2, action_col3 = st.columns(3)
     with action_col1:
-        if st.button("🔄 重新渲染预览", use_container_width=True):
+        if st.button("🔄 重新渲染预览", width="stretch"):
             current_code = clean_text(st.session_state.get("plot_rerender_code_editor", ""))
             st.session_state["plot_rerender_code"] = current_code
             st.session_state["plot_rerender_preview"] = execute_plot_code_with_details(current_code)
             st.rerun()
     with action_col2:
-        if st.button("✨ 预览送去精修", use_container_width=True):
+        if st.button("✨ 预览送去精修", width="stretch"):
             preview = st.session_state.get("plot_rerender_preview", {})
             if preview.get("success") and preview.get("base64_jpg"):
                 stage_refine_source_image(
@@ -2533,7 +2894,7 @@ def render_plot_rerender_workspace() -> None:
             else:
                 st.warning("当前还没有成功的预览结果，请先执行一次重渲染。")
     with action_col3:
-        if st.button("🧹 清空工作台", use_container_width=True):
+        if st.button("🧹 清空工作台", width="stretch"):
             for key in (
                 "plot_rerender_code",
                 "plot_rerender_code_editor",
@@ -2551,13 +2912,13 @@ def render_plot_rerender_workspace() -> None:
     if preview.get("success") and preview.get("base64_jpg"):
         preview_image = base64_to_image(preview.get("base64_jpg"))
         if preview_image is not None:
-            st.image(preview_image, use_container_width=True, caption="重渲染预览")
+            st.image(preview_image, width="stretch", caption="重渲染预览")
             st.download_button(
                 label="[DOWN] 下载预览 JPEG",
                 data=base64.b64decode(preview["base64_jpg"]),
                 file_name=f"plot_rerender_preview_{candidate_id}.jpg",
                 mime="image/jpeg",
-                use_container_width=True,
+                width="stretch",
             )
     elif preview:
         st.error("重渲染失败，请检查代码输出和报错信息。")
@@ -2592,7 +2953,7 @@ def render_generation_history_panel(task_name: str) -> None:
 
         action_col1, action_col2 = st.columns(2)
         with action_col1:
-            if st.button("📥 载入历史结果", use_container_width=True):
+            if st.button("📥 载入历史结果", width="stretch"):
                 snapshot = load_generation_history_snapshot(selected_path)
                 persist_generation_job_results(
                     snapshot,
@@ -2601,7 +2962,7 @@ def render_generation_history_panel(task_name: str) -> None:
                 persist_demo_ui_state()
                 st.rerun()
         with action_col2:
-            if st.button("🧹 清除当前结果", use_container_width=True):
+            if st.button("🧹 清除当前结果", width="stretch"):
                 for key in (
                     "results",
                     "task_name",
@@ -2725,14 +3086,14 @@ def render_generation_runtime_panel(snapshot: dict | None, *, requested_candidat
                 if st.button(
                     "🛑 停止生成",
                     key=f"stop_generation_panel_{snapshot.get('job_id', 'active')}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     return "cancel"
             with action_col2:
                 if st.button(
                     "🔄 刷新状态",
                     key=f"refresh_generation_panel_{snapshot.get('job_id', 'active')}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     return "refresh"
     return None
@@ -2744,7 +3105,7 @@ def render_generation_live_stream(snapshot: dict | None) -> None:
         return
 
     candidate_snapshots = snapshot.get("candidate_snapshots", {}) or {}
-    event_timeline = snapshot.get("event_timeline", []) or []
+    event_timeline = snapshot.get("event_history", snapshot.get("event_timeline", [])) or []
     if not candidate_snapshots and not event_timeline:
         return
 
@@ -2777,7 +3138,7 @@ def render_generation_live_stream(snapshot: dict | None) -> None:
                             if preview is not None:
                                 st.image(
                                     preview,
-                                    use_container_width=True,
+                                    width="stretch",
                                     caption=candidate_snapshot.get("preview_label", "最新预览"),
                                 )
                         else:
@@ -2789,17 +3150,11 @@ def render_generation_live_stream(snapshot: dict | None) -> None:
     if event_timeline:
         st.markdown("**事件时间线**")
         latest_events = event_timeline[-GENERATION_EVENT_RENDER_LIMIT:]
-        timeline_lines = [
-            f"[{item.get('ts', '--:--:--')}] 候选 {item.get('candidate_id', '?')} | {item.get('message', '')}"
-            for item in latest_events
-        ]
+        timeline_lines = [_render_event_status_line(item) for item in latest_events]
         st.code("\n".join(timeline_lines), language="text")
         if len(event_timeline) > len(latest_events):
             with st.expander(f"查看全部最近 {len(event_timeline)} 条事件", expanded=False):
-                all_lines = [
-                    f"[{item.get('ts', '--:--:--')}] 候选 {item.get('candidate_id', '?')} | {item.get('message', '')}"
-                    for item in event_timeline
-                ]
+                all_lines = [_render_event_status_line(item) for item in event_timeline]
                 st.code("\n".join(all_lines), language="text")
 
 
@@ -2827,6 +3182,7 @@ def render_refine_runtime_panel(snapshot: dict | None, *, requested_images: int)
     ratio = min(progress_done / progress_total, 1.0)
     status_lines = snapshot.get("status_history", []) or []
     latest_lines = status_lines[-REFINE_LOG_RENDER_LIMIT:]
+    event_history = snapshot.get("event_history", []) or []
     success_count = len(snapshot.get("refined_images", []))
     failed_count = len(snapshot.get("failed_results", []))
 
@@ -2851,6 +3207,15 @@ def render_refine_runtime_panel(snapshot: dict | None, *, requested_images: int)
             if len(status_lines) > len(latest_lines):
                 with st.expander(f"查看全部最近 {len(status_lines)} 条日志", expanded=False):
                     st.code("\n".join(status_lines), language="text")
+        if event_history:
+            latest_events = event_history[-REFINE_EVENT_RENDER_LIMIT:]
+            event_lines = [_render_event_status_line(item) for item in latest_events]
+            st.markdown("**最近事件**")
+            st.code("\n".join(event_lines), language="text")
+            if len(event_history) > len(latest_events):
+                with st.expander(f"查看完整事件时间线（共 {len(event_history)} 条）", expanded=False):
+                    all_event_lines = [_render_event_status_line(item) for item in event_history]
+                    st.code("\n".join(all_event_lines), language="text")
 
         if status == "failed" and snapshot.get("error"):
             st.error(f"后台精修报错：{snapshot.get('error')}")
@@ -2861,14 +3226,14 @@ def render_refine_runtime_panel(snapshot: dict | None, *, requested_images: int)
                 if st.button(
                     "🛑 停止精修",
                     key=f"stop_refine_panel_{snapshot.get('job_id', 'active')}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     return "cancel"
             with action_col2:
                 if st.button(
                     "🔄 刷新状态",
                     key=f"refresh_refine_panel_{snapshot.get('job_id', 'active')}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     return "refresh"
     return None
@@ -2918,7 +3283,7 @@ def render_refine_results_section(
         uploaded_file.getvalue() if uploaded_file is not None else b"",
     )
     if original_preview_bytes:
-        st.image(Image.open(BytesIO(original_preview_bytes)), use_container_width=True)
+        st.image(Image.open(BytesIO(original_preview_bytes)), width="stretch")
 
     st.markdown(f"### 精修后（{final_resolution}）")
 
@@ -2963,7 +3328,7 @@ def render_refine_results_section(
                     file_name=file_name,
                     mime="image/png",
                     key=f"download_refined_{idx}_{final_resolution}_{item_pos}",
-                    use_container_width=True
+                    width="stretch"
                 )
 
     zip_buffer.seek(0)
@@ -2972,7 +3337,7 @@ def render_refine_results_section(
         data=zip_buffer.getvalue(),
         file_name=zip_name,
         mime="application/zip",
-        use_container_width=True,
+        width="stretch",
         key="download_refined_zip"
     )
 
@@ -3354,7 +3719,7 @@ def main():
                 )
                 if parsed_plot_input["preview_rows"]:
                     with st.expander("🔎 查看结构化数据预览", expanded=False):
-                        st.dataframe(parsed_plot_input["preview_rows"], use_container_width=True)
+                        st.dataframe(parsed_plot_input["preview_rows"], width="stretch")
             else:
                 st.warning(parsed_plot_input["error"])
                 allow_raw_plot_input = st.checkbox(
@@ -3406,7 +3771,7 @@ def main():
         if st.button(
             "🚀 生成候选方案",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=generation_is_running,
         ):
             if not input_content or not visual_intent:
@@ -3541,7 +3906,7 @@ def main():
                             data=json_data,
                             file_name=json_file_path.name,
                             mime="application/json",
-                            use_container_width=True
+                            width="stretch"
                         )
                 if bundle_file_path and bundle_file_path.exists():
                     target_col = columns[2] if len(columns) > 2 else columns[1]
@@ -3553,7 +3918,7 @@ def main():
                             data=bundle_data,
                             file_name=bundle_file_path.name,
                             mime="application/json",
-                            use_container_width=True
+                            width="stretch"
                         )
 
             # 以网格形式展示结果（3 列）
@@ -3607,14 +3972,14 @@ def main():
                                 f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
                             ),
                             mime="application/zip",
-                            use_container_width=True,
+                            width="stretch",
                         )
                 else:
                     with download_cols[0]:
                         st.button(
                             "[DOWN] 下载最终候选（ZIP）",
                             disabled=True,
-                            use_container_width=True,
+                            width="stretch",
                         )
 
                 if full_exported_count > 0:
@@ -3627,14 +3992,14 @@ def main():
                                 f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
                             ),
                             mime="application/zip",
-                            use_container_width=True,
+                            width="stretch",
                         )
                 else:
                     with download_cols[1]:
                         st.button(
                             "[DOWN] 下载全流程总览（ZIP）",
                             disabled=True,
-                            use_container_width=True,
+                            width="stretch",
                         )
 
                 st.caption(
@@ -3776,7 +4141,7 @@ def main():
             with staged_col1:
                 st.caption(f"已载入候选来源：{staged_label}")
             with staged_col2:
-                if st.button("🧹 清除候选来源", use_container_width=True):
+                if st.button("🧹 清除候选来源", width="stretch"):
                     clear_staged_refine_source()
                     st.rerun()
 
@@ -3799,7 +4164,7 @@ def main():
             with col1:
                 st.markdown("### 原始图像")
                 st.caption(f"来源：{selected_source_label}")
-                st.image(preview_image, use_container_width=True)
+                st.image(preview_image, width="stretch")
 
             with col2:
                 st.markdown("### 编辑指令")
@@ -3844,7 +4209,7 @@ def main():
                 if st.button(
                     "✨ 精修图像",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=refine_is_running,
                 ):
                     if not edit_prompt:
@@ -3898,3 +4263,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
