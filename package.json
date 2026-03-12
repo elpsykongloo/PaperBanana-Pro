@@ -1,0 +1,25 @@
+{
+  "name": "paperbanana",
+  "version": "1.0.0",
+  "description": "> 面向中文用户的科研插图与统计图生成系统。当前提供 Streamlit 图形界面、CLI 批处理、结果回放与评估可视化工具。",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elpsykongloo/PaperBanana-Pro.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/elpsykongloo/PaperBanana-Pro/issues"
+  },
+  "homepage": "https://github.com/elpsykongloo/PaperBanana-Pro#readme"
+}
