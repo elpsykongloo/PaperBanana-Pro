@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from utils.demo_job_store import get_job_store_root, get_ui_state_path
 from utils.result_bundle import build_run_manifest, write_result_bundle
 
 
@@ -38,6 +39,13 @@ class GenerationBackgroundJobTest(unittest.TestCase):
         demo.st.session_state.clear()
         with demo.DEMO_UI_STATE_LOCK:
             demo.DEMO_UI_STATE.clear()
+        ui_state_path = get_ui_state_path(base_dir=demo.REPO_ROOT)
+        if ui_state_path.exists():
+            ui_state_path.unlink()
+        job_store_root = get_job_store_root(base_dir=demo.REPO_ROOT)
+        for child in job_store_root.glob("*"):
+            if child.is_file():
+                child.unlink()
 
     def test_background_job_runtime_is_shared_resource(self):
         runtime_a = demo.get_background_job_runtime()
@@ -69,6 +77,7 @@ class GenerationBackgroundJobTest(unittest.TestCase):
         demo.st.session_state["tab1_model_name"] = "gemini-3.1-pro-preview"
         demo.st.session_state["tab1_model_name_selector"] = demo.CUSTOM_MODEL_OPTION
         demo.st.session_state["tab1_model_name_custom"] = "custom-text-model"
+        demo.st.session_state["workspace_mode"] = "✨ 精修图像"
         demo.st.session_state["tab1_curated_profile"] = "paper-profile"
         demo.st.session_state["tab1_curated_profile_input"] = "paper-profile"
         demo.st.session_state["tab1_num_candidates"] = 8
@@ -76,20 +85,62 @@ class GenerationBackgroundJobTest(unittest.TestCase):
         demo.st.session_state["active_generation_job_id"] = "generate_demo_running"
 
         demo.persist_demo_ui_state()
+        with demo.DEMO_UI_STATE_LOCK:
+            demo.DEMO_UI_STATE.clear()
         demo.st.session_state.clear()
 
         demo.restore_persisted_demo_ui_state()
 
         self.assertEqual(demo.st.session_state["tab1_provider"], "gemini")
-        self.assertEqual(demo.st.session_state["tab1_api_key"], "runtime-key")
         self.assertEqual(demo.st.session_state["tab1_model_name"], "gemini-3.1-pro-preview")
         self.assertEqual(demo.st.session_state["tab1_model_name_selector"], demo.CUSTOM_MODEL_OPTION)
         self.assertEqual(demo.st.session_state["tab1_model_name_custom"], "custom-text-model")
+        self.assertEqual(demo.st.session_state["workspace_mode"], "✨ 精修图像")
         self.assertEqual(demo.st.session_state["tab1_curated_profile"], "paper-profile")
         self.assertEqual(demo.st.session_state["tab1_curated_profile_input"], "paper-profile")
         self.assertEqual(demo.st.session_state["tab1_num_candidates"], 8)
         self.assertEqual(demo.st.session_state["refine_staged_image_bytes"], b"preview-bytes")
+        self.assertNotIn("tab1_api_key", demo.st.session_state)
         self.assertNotIn("active_generation_job_id", demo.st.session_state)
+
+    def test_generation_job_snapshot_falls_back_to_disk_store(self):
+        job_id = "generate_disk_snapshot"
+        job = demo.GenerationJobState(
+            job_id=job_id,
+            dataset_name="PaperBananaBench",
+            task_name="diagram",
+            exp_mode="demo_planner_critic",
+            retrieval_setting="none",
+            curated_profile="default",
+            provider="gemini",
+            model_name="gemini-3.1-flash-lite-preview",
+            image_model_name="gemini-3.1-flash-image-preview",
+            concurrency_mode="manual",
+            max_concurrent=1,
+            requested_candidates=1,
+            max_critic_rounds=0,
+            aspect_ratio="16:9",
+            image_resolution="2K",
+            content="paper method",
+            visual_intent="draw a pipeline",
+        )
+        demo._store_generation_job(job)
+        demo.record_generation_job_event(
+            job_id,
+            {
+                "kind": "job",
+                "status": "running",
+                "message": "后台任务已启动",
+            },
+        )
+
+        demo.clear_generation_job(job_id)
+        snapshot = demo.get_generation_job_snapshot(job_id)
+
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["job_id"], job_id)
+        self.assertEqual(snapshot["snapshot_source"], "disk")
+        self.assertTrue(snapshot["event_history"])
 
     def _wait_for_terminal_snapshot(self, job_id: str, timeout: float = 5.0) -> dict:
         deadline = time.time() + timeout
@@ -269,12 +320,12 @@ class GenerationBackgroundJobTest(unittest.TestCase):
                         "candidate_id": 0,
                         "kind": "stage",
                         "status": "running",
-                        "stage": "planner 规划中",
-                        "message": "候选 0: planner 规划中",
+                        "stage": "📝 生成规划草案",
+                        "message": "候选 01: 📝 生成规划草案",
                     }
                 )
             elif status_callback:
-                status_callback("候选 0: planner 规划中")
+                status_callback("候选 01: 📝 生成规划草案")
             logging.getLogger("PlannerAgent").info("测试规划日志已同步")
             await asyncio.sleep(0.01)
             result = {
@@ -323,9 +374,9 @@ class GenerationBackgroundJobTest(unittest.TestCase):
             )
             snapshot = self._wait_for_terminal_snapshot(job_id)
 
-            self.assertEqual(snapshot["candidate_stage_map"]["0"], "planner 规划中")
+            self.assertEqual(snapshot["candidate_stage_map"]["0"], "📝 生成规划草案")
             self.assertTrue(
-                any(event.get("stage") == "planner 规划中" for event in snapshot["event_history"])
+                any(event.get("stage") == "📝 生成规划草案" for event in snapshot["event_history"])
             )
             self.assertTrue(
                 any("测试规划日志已同步" in line for line in snapshot["status_history"])
@@ -357,11 +408,11 @@ class GenerationBackgroundJobTest(unittest.TestCase):
                         "candidate_id": 0,
                         "kind": "preview_ready",
                         "status": "running",
-                        "stage": "visualizer 首张预览已生成",
-                        "message": "候选 0: 首张预览已生成",
+                        "stage": "🖼️ 首张预览已生成",
+                        "message": "候选 01: 首张预览已生成",
                         "preview_image": preview_b64,
                         "preview_mime_type": "image/png",
-                        "preview_label": "target_diagram_desc0",
+                        "preview_label": "📝 规划草案",
                     }
                 )
             result = {
@@ -416,7 +467,10 @@ class GenerationBackgroundJobTest(unittest.TestCase):
             self.assertTrue(
                 any(event.get("kind") == "preview_ready" for event in snapshot["event_history"])
             )
-            self.assertEqual(candidate_snapshot["preview_label"], "target_diagram_desc0")
+            self.assertEqual(candidate_snapshot["preview_label"], "✅ 最终结果预览")
+            self.assertTrue(
+                any(event.get("preview_label") == "📝 规划草案" for event in snapshot["event_history"])
+            )
             self.assertTrue(candidate_snapshot["preview_image"])
             self.assertEqual(candidate_snapshot["status"], "completed")
         finally:
@@ -424,6 +478,53 @@ class GenerationBackgroundJobTest(unittest.TestCase):
             demo.save_demo_generation_artifacts = original_save
             if job_id:
                 demo.clear_generation_job(job_id)
+
+    def test_generation_progress_tracks_terminal_candidates_without_ordered_yield_blocking(self):
+        job_id = "generate_progress_sync"
+        job = demo.GenerationJobState(
+            job_id=job_id,
+            dataset_name="PaperBananaBench",
+            task_name="diagram",
+            exp_mode="demo_planner_critic",
+            retrieval_setting="auto",
+            curated_profile="default",
+            provider="gemini",
+            model_name="gemini-3.1-flash-lite-preview",
+            image_model_name="gemini-3.1-flash-image-preview",
+            concurrency_mode="auto",
+            max_concurrent=5,
+            requested_candidates=5,
+            max_critic_rounds=1,
+            aspect_ratio="16:9",
+            image_resolution="2K",
+            content="paper method",
+            visual_intent="draw a pipeline",
+            progress_total=5,
+        )
+        demo._store_generation_job(job)
+        try:
+            demo.update_generation_job_progress(job_id, 1, 5, 5)
+            for candidate_id in (0, 2, 3, 4):
+                demo.record_generation_job_event(
+                    job_id,
+                    {
+                        "candidate_id": candidate_id,
+                        "kind": "candidate_result",
+                        "status": "completed",
+                        "stage": "候选流程完成",
+                        "message": f"候选 {candidate_id}: 候选已完成并可展示",
+                    },
+                )
+
+            snapshot = demo.get_generation_job_snapshot(job_id)
+            self.assertEqual(snapshot["progress_done"], 4)
+            self.assertEqual(snapshot["progress_total"], 5)
+
+            demo.update_generation_job_progress(job_id, 2, 5, 5)
+            snapshot = demo.get_generation_job_snapshot(job_id)
+            self.assertEqual(snapshot["progress_done"], 4)
+        finally:
+            demo.clear_generation_job(job_id)
 
     def test_stage_candidate_for_refine_stores_session_image(self):
         result = {
@@ -439,7 +540,7 @@ class GenerationBackgroundJobTest(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertTrue(demo.st.session_state["refine_staged_image_bytes"])
-        self.assertEqual(demo.st.session_state["refine_staged_source_label"], "候选方案 7")
+        self.assertEqual(demo.st.session_state["refine_staged_source_label"], "候选 08")
 
     def test_build_full_process_zip_contains_stage_images_and_metadata(self):
         result = {

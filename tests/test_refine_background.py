@@ -8,6 +8,7 @@ from io import BytesIO
 
 from PIL import Image
 
+from utils.demo_job_store import get_job_store_root
 
 if "streamlit" not in sys.modules:
     fake_streamlit = types.ModuleType("streamlit")
@@ -71,6 +72,12 @@ class _FakeRenderStreamlit:
 
 
 class RefineBackgroundJobTest(unittest.TestCase):
+    def setUp(self):
+        job_store_root = get_job_store_root(base_dir=demo.REPO_ROOT)
+        for child in job_store_root.glob("*"):
+            if child.is_file():
+                child.unlink()
+
     def _wait_for_terminal_snapshot(self, job_id: str, timeout: float = 5.0) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -252,6 +259,36 @@ class RefineBackgroundJobTest(unittest.TestCase):
             demo.generation_utils = original_generation_utils
             demo.refine_image_with_nanoviz = original_refine_one
 
+    def test_refine_job_snapshot_falls_back_to_disk_store(self):
+        job_id = "refine_disk_snapshot"
+        job = demo.RefineJobState(
+            job_id=job_id,
+            provider="gemini",
+            image_model_name="gemini-3.1-flash-image-preview",
+            resolution="2K",
+            aspect_ratio="16:9",
+            num_images=1,
+            input_mime_type="image/png",
+            original_image_bytes=b"input-image",
+        )
+        demo._store_refine_job(job)
+        demo.record_refine_job_event(
+            job_id,
+            {
+                "kind": "job",
+                "status": "running",
+                "message": "后台精修任务已启动",
+            },
+        )
+
+        demo.clear_refine_job(job_id)
+        snapshot = demo.get_refine_job_snapshot(job_id)
+
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["job_id"], job_id)
+        self.assertEqual(snapshot["snapshot_source"], "disk")
+        self.assertTrue(snapshot["event_history"])
+
     def test_render_refine_results_section_renders_even_with_uploaded_source(self):
         original_st = demo.st
         fake_st = _FakeRenderStreamlit()
@@ -273,7 +310,7 @@ class RefineBackgroundJobTest(unittest.TestCase):
         demo.st = fake_st
         try:
             demo.render_refine_results_section(
-                uploaded_file=_UploadedFile(),
+                fallback_original_bytes=_UploadedFile.getvalue(),
                 fallback_resolution="2K",
                 fallback_provider="gemini",
                 fallback_image_model_name="gemini-3.1-flash-image-preview",
