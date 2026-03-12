@@ -2,6 +2,9 @@ import importlib
 import sys
 import types
 import unittest
+from io import BytesIO
+
+from PIL import Image
 
 
 if "streamlit" not in sys.modules:
@@ -11,6 +14,13 @@ if "streamlit" not in sys.modules:
     sys.modules["streamlit"] = fake_streamlit
 
 demo = importlib.import_module("demo")
+
+
+def make_test_png_bytes(color: tuple[int, int, int] = (12, 34, 56)) -> bytes:
+    """生成一个最小可用 PNG，避免测试依赖伪造字节。"""
+    buffer = BytesIO()
+    Image.new("RGB", (4, 4), color=color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class DemoWorkbenchStateTest(unittest.TestCase):
@@ -53,7 +63,7 @@ class DemoWorkbenchStateTest(unittest.TestCase):
         self.assertEqual(demo.get_generation_final_candidate_token(), "")
 
     def test_append_refine_snapshot_to_version_history_creates_branch_versions(self):
-        original_bytes = b"original-image"
+        original_bytes = make_test_png_bytes((200, 10, 10))
         demo.stage_refine_source_image(
             original_bytes,
             input_mime_type="image/png",
@@ -76,8 +86,8 @@ class DemoWorkbenchStateTest(unittest.TestCase):
                 "input_mime_type": "image/png",
                 "original_image_bytes": original_bytes,
                 "refined_images": [
-                    {"index": 1, "bytes": b"refined-v1"},
-                    {"index": 2, "bytes": b"refined-v2"},
+                    {"index": 1, "bytes": make_test_png_bytes((10, 200, 10))},
+                    {"index": 2, "bytes": make_test_png_bytes((10, 10, 200))},
                 ],
             },
             edit_prompt="放大并优化布局",
@@ -91,7 +101,7 @@ class DemoWorkbenchStateTest(unittest.TestCase):
         self.assertTrue(all(item.get("edit_prompt") == "放大并优化布局" for item in child_nodes))
 
     def test_append_refine_snapshot_prefers_selected_source_label(self):
-        original_bytes = b"uploaded-image"
+        original_bytes = make_test_png_bytes((123, 45, 67))
         demo.st.session_state["refine_staged_source_label"] = "候选 01"
         demo.st.session_state["refine_selected_source_label"] = "上传图像"
 
@@ -104,7 +114,7 @@ class DemoWorkbenchStateTest(unittest.TestCase):
                 "input_mime_type": "image/png",
                 "original_image_bytes": original_bytes,
                 "refined_images": [
-                    {"index": 1, "bytes": b"refined-upload"},
+                    {"index": 1, "bytes": make_test_png_bytes((88, 99, 120))},
                 ],
             },
             edit_prompt="只做清晰度增强",
@@ -141,7 +151,7 @@ class DemoWorkbenchStateTest(unittest.TestCase):
             [
                 {
                     "version_key": "v01",
-                    "image_bytes": b"image-bytes",
+                    "image_bytes": make_test_png_bytes((1, 2, 3)),
                 }
             ],
         )
@@ -149,7 +159,45 @@ class DemoWorkbenchStateTest(unittest.TestCase):
         restored = demo._deserialize_ui_state_value("refine_version_history", payload)
 
         self.assertEqual(restored[0]["version_key"], "v01")
-        self.assertEqual(restored[0]["image_bytes"], b"image-bytes")
+        self.assertEqual(restored[0]["image_bytes"], make_test_png_bytes((1, 2, 3)))
+
+    def test_validate_refine_image_bytes_rejects_invalid_bytes(self):
+        validated_bytes, validated_mime_type, validation_error = demo.validate_refine_image_bytes(
+            b"not-an-image",
+            input_mime_type="image/png",
+            file_name="broken.png",
+        )
+
+        self.assertEqual(validated_bytes, b"")
+        self.assertEqual(validated_mime_type, "image/png")
+        self.assertIn("broken.png", validation_error or "")
+        self.assertIn("不是可识别", validation_error or "")
+
+    def test_sanitize_refine_version_history_removes_invalid_entries(self):
+        valid_bytes = make_test_png_bytes((90, 80, 70))
+        demo.st.session_state["refine_version_history"] = [
+            {
+                "version_key": "v01",
+                "label": "原图",
+                "image_bytes": valid_bytes,
+                "input_mime_type": "image/png",
+            },
+            {
+                "version_key": "v02",
+                "label": "损坏版本",
+                "image_bytes": b"broken-image",
+                "input_mime_type": "image/png",
+            },
+        ]
+        demo.st.session_state["refine_active_version_key"] = "v02"
+        demo.st.session_state["refine_latest_version_keys"] = ["v01", "v02"]
+
+        removed_labels = demo.sanitize_refine_version_history()
+
+        self.assertEqual(removed_labels, ["损坏版本"])
+        self.assertEqual(len(demo.st.session_state["refine_version_history"]), 1)
+        self.assertEqual(demo.st.session_state["refine_active_version_key"], "v01")
+        self.assertEqual(demo.st.session_state["refine_latest_version_keys"], ["v01"])
 
     def test_apply_pending_generation_widget_state_updates_flushes_queue(self):
         demo.st.session_state["_pending_generation_widget_updates"] = {

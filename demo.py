@@ -32,7 +32,7 @@ import uuid
 from collections import Counter
 from contextlib import contextmanager
 from io import BytesIO
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from pathlib import Path
 import sys
 import os
@@ -205,6 +205,7 @@ REFINE_EVENT_RENDER_LIMIT = 10
 SAFE_DISK_UI_STATE_EXCLUDE_KEYS = {
     "tab1_api_key",
     "refine_api_key",
+    "refine_uploaded_image_bytes",
 }
 WORKSPACE_MODE_OPTIONS = [
     "📊 生成候选方案",
@@ -481,6 +482,169 @@ def normalize_image_mime_type(mime_type: Optional[str]) -> str:
     if lowered in ("image/jpeg", "image/png"):
         return lowered
     return "image/png"
+
+
+def infer_image_mime_type_from_format(image_format: str | None, *, fallback: str = "image/png") -> str:
+    """根据 Pillow 识别到的格式推断 MIME。"""
+    format_text = str(image_format or "").strip().upper()
+    if format_text in {"JPEG", "JPG"}:
+        return "image/jpeg"
+    if format_text == "PNG":
+        return "image/png"
+    return normalize_image_mime_type(fallback)
+
+
+def validate_refine_image_bytes(
+    image_bytes: bytes,
+    *,
+    input_mime_type: str = "image/png",
+    file_name: str = "",
+) -> tuple[bytes, str, str | None]:
+    """验证精修输入是否为可解码图片，并返回规范化后的 MIME。"""
+    normalized_mime_type = normalize_image_mime_type(input_mime_type)
+    raw_bytes = bytes(image_bytes or b"")
+    if not raw_bytes:
+        return b"", normalized_mime_type, "上传文件为空，请重新选择 PNG 或 JPG 图片。"
+
+    try:
+        with Image.open(BytesIO(raw_bytes)) as verified_image:
+            verified_image.verify()
+        with Image.open(BytesIO(raw_bytes)) as loaded_image:
+            loaded_image.load()
+            resolved_mime_type = infer_image_mime_type_from_format(
+                loaded_image.format,
+                fallback=normalized_mime_type,
+            )
+    except UnidentifiedImageError:
+        display_name = file_name or "当前上传文件"
+        return (
+            b"",
+            normalized_mime_type,
+            f"{display_name} 不是可识别的 PNG/JPG 图片，请重新上传。",
+        )
+    except Exception as exc:
+        display_name = file_name or "当前上传文件"
+        return (
+            b"",
+            normalized_mime_type,
+            f"{display_name} 读取失败：{safe_log_text(exc, max_len=200)}",
+        )
+
+    return raw_bytes, resolved_mime_type, None
+
+
+def load_refine_preview_image(
+    image_bytes: bytes,
+    *,
+    source_label: str = "当前图像",
+) -> tuple[Image.Image | None, str | None]:
+    """安全加载精修预览图，避免坏图像直接炸掉页面。"""
+    raw_bytes = bytes(image_bytes or b"")
+    if not raw_bytes:
+        return None, f"{source_label} 为空，请重新选择图片。"
+
+    try:
+        with Image.open(BytesIO(raw_bytes)) as preview_image:
+            preview_image.load()
+            return preview_image.copy(), None
+    except UnidentifiedImageError:
+        return None, f"{source_label} 已损坏或不是有效图片，请重新上传或重新载入来源。"
+    except Exception as exc:
+        return None, f"{source_label} 预览失败：{safe_log_text(exc, max_len=200)}"
+
+
+def clear_cached_refine_upload(*, clear_error: bool = True, reset_widget: bool = False) -> None:
+    """清理已缓存的上传图片状态。"""
+    for key in (
+        "refine_uploaded_image_bytes",
+        "refine_uploaded_input_mime_type",
+        "refine_uploaded_filename",
+        "refine_uploaded_file_size",
+        "refine_uploaded_widget_present",
+    ):
+        st.session_state.pop(key, None)
+    if clear_error:
+        st.session_state.pop("refine_upload_error", None)
+    if reset_widget:
+        current_nonce = int(st.session_state.get("refine_upload_widget_nonce", 0) or 0)
+        st.session_state["refine_upload_widget_nonce"] = current_nonce + 1
+
+
+def cache_refine_uploaded_file(uploaded_file) -> str | None:
+    """将上传控件返回的临时文件校验后写入稳定 session state。"""
+    if uploaded_file is None:
+        return None
+
+    file_name = str(getattr(uploaded_file, "name", "") or "上传图像")
+    file_size = int(getattr(uploaded_file, "size", 0) or 0)
+    input_mime_type = normalize_image_mime_type(getattr(uploaded_file, "type", None))
+    cached_name = str(st.session_state.get("refine_uploaded_filename", "") or "")
+    cached_size = int(st.session_state.get("refine_uploaded_file_size", 0) or 0)
+    cached_bytes = bytes(st.session_state.get("refine_uploaded_image_bytes", b"") or b"")
+    if cached_bytes and cached_name == file_name and cached_size == file_size:
+        st.session_state["refine_uploaded_widget_present"] = True
+        st.session_state.pop("refine_upload_error", None)
+        return None
+
+    validated_bytes, validated_mime_type, validation_error = validate_refine_image_bytes(
+        uploaded_file.getvalue(),
+        input_mime_type=input_mime_type,
+        file_name=file_name,
+    )
+    st.session_state["refine_uploaded_widget_present"] = True
+    if validation_error:
+        clear_cached_refine_upload(clear_error=False, reset_widget=True)
+        st.session_state["refine_upload_error"] = validation_error
+        return validation_error
+
+    st.session_state["refine_uploaded_image_bytes"] = validated_bytes
+    st.session_state["refine_uploaded_input_mime_type"] = validated_mime_type
+    st.session_state["refine_uploaded_filename"] = file_name
+    st.session_state["refine_uploaded_file_size"] = file_size
+    st.session_state.pop("refine_upload_error", None)
+    return None
+
+
+def sanitize_refine_version_history() -> list[str]:
+    """移除损坏的精修历史版本，避免旧坏数据反复破坏页面渲染。"""
+    history = get_refine_version_history()
+    if not history:
+        return []
+
+    valid_history: list[dict] = []
+    removed_labels: list[str] = []
+    removed_keys: set[str] = set()
+    for entry in history:
+        version_key = str(entry.get("version_key", "") or "")
+        label = str(entry.get("label", version_key or "未知版本") or "未知版本")
+        image_bytes = entry.get("image_bytes", b"") or b""
+        _, preview_error = load_refine_preview_image(image_bytes, source_label=label)
+        if preview_error:
+            removed_labels.append(label)
+            if version_key:
+                removed_keys.add(version_key)
+            continue
+        valid_history.append(entry)
+
+    if not removed_labels:
+        return []
+
+    st.session_state["refine_version_history"] = valid_history
+    active_version_key = str(st.session_state.get("refine_active_version_key", "") or "")
+    valid_keys = {
+        str(entry.get("version_key", "") or "")
+        for entry in valid_history
+        if str(entry.get("version_key", "") or "")
+    }
+    if active_version_key and active_version_key not in valid_keys:
+        st.session_state["refine_active_version_key"] = (
+            str(valid_history[-1].get("version_key", "") or "") if valid_history else ""
+        )
+    latest_keys = list(st.session_state.get("refine_latest_version_keys", []) or [])
+    st.session_state["refine_latest_version_keys"] = [
+        key for key in latest_keys if str(key or "") not in removed_keys
+    ]
+    return removed_labels
 
 
 COMMON_ASPECT_RATIOS = [
@@ -1176,6 +1340,10 @@ PERSISTED_UI_STATE_KEYS = {
     "refine_input_source",
     "refine_staged_input_mime_type",
     "refine_staged_source_label",
+    "refine_uploaded_input_mime_type",
+    "refine_uploaded_filename",
+    "refine_uploaded_file_size",
+    "refine_upload_error",
     "generation_display_scope_diagram",
     "generation_display_scope_plot",
     "generation_export_scope_diagram",
@@ -1193,6 +1361,7 @@ PERSISTED_UI_STATE_KEYS = {
 }
 PERSISTED_UI_STATE_BYTES_KEYS = {
     "refine_staged_image_bytes",
+    "refine_uploaded_image_bytes",
 }
 PERSISTED_UI_STATE_COMPLEX_KEYS = {
     "generation_candidate_decisions",
@@ -1979,8 +2148,16 @@ def ensure_refine_source_version(
 ) -> str:
     if not image_bytes:
         return ""
+    validated_bytes, validated_mime_type, validation_error = validate_refine_image_bytes(
+        image_bytes,
+        input_mime_type=input_mime_type,
+        file_name=source_label,
+    )
+    if validation_error:
+        logger.warning("跳过写入损坏的精修来源版本: %s", validation_error)
+        return ""
     history = get_refine_version_history()
-    image_digest = _compute_image_digest(image_bytes)
+    image_digest = _compute_image_digest(validated_bytes)
     for entry in history:
         if entry.get("image_digest") == image_digest:
             return str(entry.get("version_key", "") or "")
@@ -1993,8 +2170,8 @@ def ensure_refine_source_version(
             "source_label": source_label,
             "edit_prompt": "",
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "image_bytes": bytes(image_bytes),
-            "input_mime_type": normalize_image_mime_type(input_mime_type),
+            "image_bytes": validated_bytes,
+            "input_mime_type": validated_mime_type,
             "image_digest": image_digest,
             "provider": "",
             "image_model_name": "",
@@ -2056,7 +2233,15 @@ def append_refine_snapshot_to_version_history(
         image_bytes = item.get("bytes", b"") or b""
         if not image_bytes:
             continue
-        image_digest = _compute_image_digest(image_bytes)
+        validated_bytes, validated_mime_type, validation_error = validate_refine_image_bytes(
+            image_bytes,
+            input_mime_type="image/png",
+            file_name=f"精修结果 {variant_index}",
+        )
+        if validation_error:
+            logger.warning("跳过写入损坏的精修结果版本: %s", validation_error)
+            continue
+        image_digest = _compute_image_digest(validated_bytes)
         if any(entry.get("image_digest") == image_digest for entry in history):
             continue
         version_key, _ = _next_refine_version_key()
@@ -2068,8 +2253,8 @@ def append_refine_snapshot_to_version_history(
                 "source_label": source_label,
                 "edit_prompt": clean_text(edit_prompt),
                 "created_at": snapshot.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                "image_bytes": bytes(image_bytes),
-                "input_mime_type": "image/png",
+                "image_bytes": validated_bytes,
+                "input_mime_type": validated_mime_type,
                 "image_digest": image_digest,
                 "provider": snapshot.get("provider", ""),
                 "image_model_name": snapshot.get("image_model_name", ""),
@@ -4289,7 +4474,13 @@ def render_refine_runtime_panel(snapshot: dict | None, *, requested_images: int)
 
 
 def render_refine_version_history_panel() -> None:
+    removed_labels = sanitize_refine_version_history()
     history = get_refine_version_history()
+    if removed_labels:
+        preview_labels = "、".join(removed_labels[:3])
+        if len(removed_labels) > 3:
+            preview_labels += f" 等 {len(removed_labels)} 个版本"
+        st.warning(f"已自动清理损坏的精修历史版本：{preview_labels}")
     if not history:
         return
 
@@ -4372,7 +4563,14 @@ def render_refine_version_history_panel() -> None:
                     st.caption(f"来源：{entry.get('source_label', 'N/A')} | 父版本：{parent_text}")
                     image_bytes = entry.get("image_bytes", b"")
                     if image_bytes:
-                        st.image(Image.open(BytesIO(image_bytes)), width="stretch")
+                        preview_image, preview_error = load_refine_preview_image(
+                            image_bytes,
+                            source_label=str(entry.get("label", entry.get("version_key", "版本")) or "历史版本"),
+                        )
+                        if preview_image is not None:
+                            st.image(preview_image, width="stretch")
+                        elif preview_error:
+                            st.caption(preview_error)
                     if entry.get("edit_prompt"):
                         with st.expander("查看编辑指令", expanded=False):
                             st.write(clean_text(entry["edit_prompt"]))
@@ -4433,7 +4631,14 @@ def render_refine_results_section(
         fallback_original_bytes,
     )
     if original_preview_bytes:
-        st.image(Image.open(BytesIO(original_preview_bytes)), width="stretch")
+        original_preview_image, original_preview_error = load_refine_preview_image(
+            original_preview_bytes,
+            source_label="精修前图像",
+        )
+        if original_preview_image is not None:
+            st.image(original_preview_image, width="stretch")
+        elif original_preview_error:
+            st.warning(original_preview_error)
 
     st.markdown(f"### 精修后（{final_resolution}）")
 
@@ -4468,8 +4673,14 @@ def render_refine_results_section(
 
             with cols[col_offset]:
                 st.markdown(f"#### 结果 {idx}")
-                refined_image = Image.open(BytesIO(img_bytes))
-                st.image(refined_image, width=preview_width_px)
+                refined_image, refined_preview_error = load_refine_preview_image(
+                    img_bytes,
+                    source_label=f"精修结果 {idx}",
+                )
+                if refined_image is not None:
+                    st.image(refined_image, width=preview_width_px)
+                elif refined_preview_error:
+                    st.warning(refined_preview_error)
                 version_key = latest_version_keys[item_pos] if item_pos < len(latest_version_keys) else ""
                 if version_key:
                     st.caption(f"版本：{version_key}")
@@ -5554,6 +5765,9 @@ def render_refine_workspace() -> None:
     st.divider()
     st.markdown("## 📤 上传图像")
     staged_refine_bytes = st.session_state.get("refine_staged_image_bytes", b"")
+    upload_widget_nonce = int(st.session_state.get("refine_upload_widget_nonce", 0) or 0)
+    upload_widget_key = f"refine_uploaded_file_input_{upload_widget_nonce}"
+    previous_upload_present = bool(st.session_state.get("refine_uploaded_widget_present", False))
     source_options = ["上传图像"]
     if staged_refine_bytes:
         source_options.append("候选方案")
@@ -5574,7 +5788,33 @@ def render_refine_workspace() -> None:
         "选择一个图像文件",
         type=["png", "jpg", "jpeg"],
         help="上传您想要精修的图表",
+        key=upload_widget_key,
     )
+    if uploaded_file is not None:
+        upload_error = cache_refine_uploaded_file(uploaded_file)
+        if upload_error:
+            persist_demo_ui_state()
+            st.rerun()
+    elif previous_upload_present:
+        clear_cached_refine_upload(clear_error=True, reset_widget=False)
+
+    cached_uploaded_bytes = bytes(st.session_state.get("refine_uploaded_image_bytes", b"") or b"")
+    cached_uploaded_filename = str(st.session_state.get("refine_uploaded_filename", "") or "")
+    cached_uploaded_size = int(st.session_state.get("refine_uploaded_file_size", 0) or 0)
+    cached_upload_error = str(st.session_state.get("refine_upload_error", "") or "")
+    if cached_uploaded_bytes:
+        upload_col1, upload_col2 = st.columns([4, 1])
+        with upload_col1:
+            size_mb = cached_uploaded_size / (1024 * 1024) if cached_uploaded_size else 0.0
+            display_name = cached_uploaded_filename or "已上传图像"
+            st.caption(f"已缓存上传图像：{display_name}（{size_mb:.2f} MB）")
+        with upload_col2:
+            if st.button("🧹 清除上传图像", width="stretch", key="clear_refine_uploaded_image"):
+                clear_cached_refine_upload(clear_error=True, reset_widget=True)
+                persist_demo_ui_state()
+                st.rerun()
+    elif cached_upload_error:
+        st.error(cached_upload_error)
     if staged_refine_bytes:
         staged_label = st.session_state.get("refine_staged_source_label", "候选方案")
         staged_col1, staged_col2 = st.columns([4, 1])
@@ -5592,30 +5832,57 @@ def render_refine_workspace() -> None:
         selected_image_bytes = staged_refine_bytes
         selected_input_mime_type = st.session_state.get("refine_staged_input_mime_type", "image/png")
         selected_source_label = st.session_state.get("refine_staged_source_label", "候选方案")
-    elif uploaded_file is not None:
-        selected_image_bytes = uploaded_file.getvalue()
-        selected_input_mime_type = normalize_image_mime_type(getattr(uploaded_file, "type", None))
+    elif cached_uploaded_bytes:
+        selected_image_bytes = cached_uploaded_bytes
+        selected_input_mime_type = st.session_state.get("refine_uploaded_input_mime_type", "image/png")
         selected_source_label = "上传图像"
 
     st.session_state["refine_selected_image_bytes"] = selected_image_bytes
     st.session_state["refine_selected_input_mime_type"] = selected_input_mime_type
     st.session_state["refine_selected_source_label"] = selected_source_label
+    preview_image = None
+    preview_error = None
     if selected_image_bytes:
-        active_version_key = ensure_refine_source_version(
+        preview_image, preview_error = load_refine_preview_image(
             selected_image_bytes,
-            input_mime_type=selected_input_mime_type,
             source_label=selected_source_label,
         )
-        current_active_entry = find_refine_version_entry(
-            st.session_state.get("refine_active_version_key", "")
-        )
-        if active_version_key and (
-            current_active_entry is None
-            or current_active_entry.get("image_digest") != _compute_image_digest(selected_image_bytes)
-        ):
-            st.session_state["refine_active_version_key"] = active_version_key
-    if selected_image_bytes:
-        preview_image = Image.open(BytesIO(selected_image_bytes))
+        if preview_image is not None:
+            active_version_key = ensure_refine_source_version(
+                selected_image_bytes,
+                input_mime_type=selected_input_mime_type,
+                source_label=selected_source_label,
+            )
+            current_active_entry = find_refine_version_entry(
+                st.session_state.get("refine_active_version_key", "")
+            )
+            if active_version_key and (
+                current_active_entry is None
+                or current_active_entry.get("image_digest") != _compute_image_digest(selected_image_bytes)
+            ):
+                st.session_state["refine_active_version_key"] = active_version_key
+        else:
+            st.error(preview_error or "当前图像无法预览，请重新选择。")
+            recovery_col1, recovery_col2 = st.columns(2)
+            with recovery_col1:
+                if selected_source_label == "上传图像" and st.button(
+                    "🧹 清除损坏上传图像",
+                    width="stretch",
+                    key="clear_invalid_refine_upload",
+                ):
+                    clear_cached_refine_upload(clear_error=True, reset_widget=True)
+                    persist_demo_ui_state()
+                    st.rerun()
+            with recovery_col2:
+                if selected_source_label != "上传图像" and st.button(
+                    "🧹 清除当前候选来源",
+                    width="stretch",
+                    key="clear_invalid_refine_source",
+                ):
+                    clear_staged_refine_source()
+                    persist_demo_ui_state()
+                    st.rerun()
+    if preview_image is not None:
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("### 原始图像")
