@@ -1,0 +1,17 @@
+# Archived on 2026-03-11.
+# PyPI publishing is intentionally disabled while PaperBanana-Pro is repo-first
+# and only officially supports `uv tool install --editable .`.
+# Restore this workflow only after the non-editable package contract, build
+# artifacts, and release validation pipeline are ready for real publication.
+
+name: Publish to PyPI (Disabled)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publication disabled
+        run: echo "PyPI publication is intentionally disabled for the current repo-first release model."
