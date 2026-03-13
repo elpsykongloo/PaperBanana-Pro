@@ -74,13 +74,26 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "paperbanana run --help exited $LASTEXITCODE" }
           }
           catch {
-            Write-Host "::error::Smoke test failed: $_"
-            Write-Host "Exception details: $($_.Exception.Message)"
-            if ($_.Exception.InnerException) {
-              Write-Host "Inner: $($_.Exception.InnerException.Message)"
+            Write-Host "::error::Smoke test failed: $($_.Exception.Message)"
+            $fullMsg = $_.Exception.Message -replace "`n","`n  "
+            Write-Host "Full error:`n  $fullMsg"
+            # Dump all smoke log files for diagnosis
+            $logFiles = Get-ChildItem $env:RUNNER_TEMP -Filter "paperbanana-*.log" -ErrorAction SilentlyContinue
+            foreach ($lf in $logFiles) {
+              Write-Host "--- $($lf.Name) ---"
+              Get-Content $lf.FullName -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+              Write-Host "--- end $($lf.Name) ---"
             }
             throw
           }
           finally {
             Pop-Location
           }
+
+      - name: Upload smoke test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-logs
+          path: ${{ runner.temp }}/paperbanana-*.log
+          if-no-files-found: ignore
