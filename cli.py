@@ -33,6 +33,18 @@ import sys
 from pathlib import Path
 
 
+def _safe_print(msg: str) -> None:
+    """Print that never crashes on non-UTF-8 Windows consoles."""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        fallback = msg.encode(
+            getattr(sys.stdout, "encoding", None) or "utf-8",
+            errors="backslashreplace",
+        ).decode("ascii", errors="replace")
+        print(fallback)
+
+
 VIEWER_MODULES = {
     "evolution": "visualize.show_pipeline_evolution",
     "pipeline": "visualize.show_pipeline_evolution",
@@ -65,7 +77,7 @@ def launch_streamlit_module(
     if default_port is not None:
         cmd.extend(["--server.port", str(default_port)])
     cmd.extend(extra_args)
-    print(f"[PaperBanana-Pro] 启动 Streamlit 应用：{module_name}")
+    _safe_print(f"[PaperBanana-Pro] 启动 Streamlit 应用：{module_name}")
     return subprocess.call(cmd)
 
 
@@ -74,7 +86,7 @@ def launch_python_module(module_name: str, extra_args: list[str]) -> int:
     if spec is None:
         raise FileNotFoundError(f"无法解析 Python 模块：{module_name}")
     cmd = [sys.executable, "-m", module_name, *extra_args]
-    print(f"[PaperBanana-Pro] 运行 CLI 模块：{module_name}")
+    _safe_print(f"[PaperBanana-Pro] 运行 CLI 模块：{module_name}")
     return subprocess.call(cmd)
 
 
@@ -89,7 +101,7 @@ def _launch_cli(extra_args: list[str]) -> int:
 def _launch_viewer(viewer_name: str, extra_args: list[str]) -> int:
     module_name = VIEWER_MODULES.get(viewer_name, "")
     if not module_name:
-        print(f"[PaperBanana-Pro] 未知 viewer：{viewer_name}\n")
+        _safe_print(f"[PaperBanana-Pro] 未知 viewer：{viewer_name}\n")
         _print_viewer_help()
         return 1
     return launch_streamlit_module(module_name, extra_args)
@@ -169,7 +181,7 @@ def main() -> None:
         _print_help()
         return
 
-    print(f"[PaperBanana-Pro] Unknown command: {args[0]}\n")
+    _safe_print(f"[PaperBanana-Pro] Unknown command: {args[0]}\n")
     _print_help()
     raise SystemExit(1)
 
