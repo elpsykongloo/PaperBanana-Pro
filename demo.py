@@ -5085,14 +5085,14 @@ def render_generation_sidebar_controls() -> dict:
         st.markdown('<p class="sb-section">Provider & 模型</p>', unsafe_allow_html=True)
         ensure_session_choice_state(
             "tab1_provider",
-            ["gemini", "evolink"],
+            ["gemini", "evolink", "openrouter"],
             str(st.session_state.get("tab1_provider", DEFAULT_PROVIDER) or DEFAULT_PROVIDER),
         )
         provider = st.selectbox(
             "生成 Provider",
-            ["gemini", "evolink"],
+            ["gemini", "evolink", "openrouter"],
             key="tab1_provider",
-            help="gemini：官方 Google AI Studio 路径；evolink：国内代理路径。",
+            help="gemini：官方 Google AI Studio 路径；evolink：国内代理路径；openrouter：通过 OpenRouter 路由多家模型。",
         )
 
         provider_defaults = get_provider_ui_defaults(provider)
@@ -5764,12 +5764,12 @@ def render_refine_workspace() -> None:
         with refine_settings_col2:
             ensure_session_choice_state(
                 "refine_provider",
-                ["gemini", "evolink"],
+                ["gemini", "evolink", "openrouter"],
                 str(st.session_state.get("refine_provider", DEFAULT_PROVIDER) or DEFAULT_PROVIDER),
             )
             refine_provider = st.selectbox(
                 "精修 Provider",
-                ["gemini", "evolink"],
+                ["gemini", "evolink", "openrouter"],
                 key="refine_provider",
                 help="精修链路可单独选择 Provider，不依赖生成页设置。",
             )

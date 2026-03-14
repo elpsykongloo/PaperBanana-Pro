@@ -117,6 +117,21 @@ class BaseAgent(ABC):
                 error_context=error_context,
             )
 
+        if provider == "openrouter":
+            return await generation_utils.call_openai_with_retry_async(
+                model_name=_model,
+                contents=contents,
+                config={
+                    "system_prompt": _sys,
+                    "temperature": _temp,
+                    "candidate_num": 1,
+                    "max_completion_tokens": max_output_tokens,
+                },
+                max_attempts=max_attempts,
+                retry_delay=retry_delay,
+                error_context=error_context,
+            )
+
         raise ValueError(
             f"Unsupported provider for text generation: {self.exp_config.provider!r}"
         )
@@ -205,9 +220,20 @@ class BaseAgent(ABC):
                 error_context=error_context,
             )
 
-        raise ValueError(
-            f"Unsupported provider for text generation: {self.exp_config.provider!r}"
-        )
+        if provider == "openrouter":
+            return await generation_utils.call_openai_image_generation_with_retry_async(
+                model_name=_model,
+                prompt=prompt,
+                config={
+                    "size": "1536x1024",
+                    "quality": "high",
+                    "background": "opaque",
+                    "output_format": "png",
+                },
+                max_attempts=max_attempts,
+                retry_delay=retry_delay,
+                error_context=error_context,
+            )
 
         raise ValueError(
             f"Unsupported provider for image generation: {self.exp_config.provider!r}"

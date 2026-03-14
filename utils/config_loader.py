@@ -15,6 +15,7 @@ SECRET_FILE_MAP = {
     ("api_keys", "openai_api_key"): "openai_api_key.txt",
     ("api_keys", "anthropic_api_key"): "anthropic_api_key.txt",
     ("evolink", "api_key"): "evolink_api_key.txt",
+    ("openrouter", "api_key"): "openrouter_api_key.txt",
 }
 
 PROVIDER_CONFIG_MAP = {
@@ -23,8 +24,8 @@ PROVIDER_CONFIG_MAP = {
         "api_section": "api_keys",
         "api_key": "google_api_key",
         "api_env": "GOOGLE_API_KEY",
-        "default_model_name": "gemini-3.1-pro-preview",
-        "default_image_model_name": "gemini-3-pro-image-preview",
+        "default_model_name": "gemini-3.1-flash-lite-preview",
+        "default_image_model_name": "gemini-3.1-flash-image-preview",
         "base_url_section": "",
         "base_url_key": "",
         "base_url_env": "",
@@ -41,6 +42,18 @@ PROVIDER_CONFIG_MAP = {
         "base_url_key": "base_url",
         "base_url_env": "EVOLINK_BASE_URL",
         "default_base_url": "https://api.evolink.ai",
+    },
+    "openrouter": {
+        "model_section": "openrouter",
+        "api_section": "openrouter",
+        "api_key": "api_key",
+        "api_env": "OPENROUTER_API_KEY",
+        "default_model_name": "google/gemini-3.1-flash-lite-preview",
+        "default_image_model_name": "google/gemini-3.1-flash-image-preview",
+        "base_url_section": "openrouter",
+        "base_url_key": "base_url",
+        "base_url_env": "OPENROUTER_BASE_URL",
+        "default_base_url": "https://openrouter.ai/api/v1",
     },
 }
 

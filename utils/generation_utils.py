@@ -143,6 +143,19 @@ def _create_openai_client(api_key: str):
         return None
 
 
+def _create_openrouter_client(api_key: str, base_url: str = ""):
+    """OpenRouter 使用 OpenAI 兼容接口，只需指定不同的 base_url。"""
+    if not api_key:
+        return None
+    resolved_url = str(base_url or "https://openrouter.ai/api/v1").strip()
+    try:
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(api_key=api_key, base_url=resolved_url)
+    except ImportError:
+        logger.warning("⚠️  未安装 openai，OpenRouter Client 不可用")
+        return None
+
+
 def get_default_runtime_context() -> RuntimeContext | None:
     return _default_runtime_context
 
@@ -217,6 +230,8 @@ def create_runtime_context(
         context.anthropic_client = _create_anthropic_client(context.api_key)
     elif normalized_provider == "openai" and context.api_key:
         context.openai_client = _create_openai_client(context.api_key)
+    elif normalized_provider == "openrouter" and context.api_key:
+        context.openai_client = _create_openrouter_client(context.api_key, resolved_base_url)
 
     return context
 
@@ -253,6 +268,8 @@ def reinitialize_runtime_context(context: RuntimeContext | None) -> RuntimeConte
         context.anthropic_client = _create_anthropic_client(context.api_key)
     elif context.provider == "openai" and context.api_key:
         context.openai_client = _create_openai_client(context.api_key)
+    elif context.provider == "openrouter" and context.api_key:
+        context.openai_client = _create_openrouter_client(context.api_key, context.base_url)
     return context
 
 

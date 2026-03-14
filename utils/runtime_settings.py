@@ -18,6 +18,10 @@ PROVIDER_UI_META = {
         "api_key_label": "API Key",
         "api_key_help": "Evolink API 密钥（Bearer Token）",
     },
+    "openrouter": {
+        "api_key_label": "OpenRouter API Key",
+        "api_key_help": "OpenRouter API 密钥，从 openrouter.ai 获取",
+    },
 }
 
 DEFAULT_PROVIDER = "gemini"

@@ -16,8 +16,8 @@
 
 # Shared defaults for Gemini provider
 defaults:
-  model_name: "" # e.g., "gemini-3.1-pro-preview"
-  image_model_name: "" # e.g., "gemini-3-pro-image-preview"
+  model_name: "" # e.g., "gemini-3.1-flash-lite-preview"
+  image_model_name: "" # e.g., "gemini-3.1-flash-image-preview"
   
 # API Keys. Recommended precedence:
 # 1. Environment variables
@@ -34,3 +34,10 @@ evolink:
   base_url: "https://api.evolink.ai"
   model_name: "gemini-2.5-flash"
   image_model_name: "nano-banana-2-lite"
+
+# OpenRouter Provider configuration
+openrouter:
+  api_key: "" # optional if using configs/local/openrouter_api_key.txt
+  base_url: "https://openrouter.ai/api/v1"
+  model_name: "google/gemini-3.1-flash-lite-preview"  # format: provider/model-name
+  image_model_name: "google/gemini-3.1-flash-image-preview"
