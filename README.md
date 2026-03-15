@@ -1,4 +1,8 @@
-<h1 align="center">PaperBanana-Pro</h1>
+<p align="center">
+  <img src="assets/hero_banner.png" alt="PaperBanana-Pro" width="680">
+</p>
+
+<h1 align="center">PaperBanana-Pro<br><sub>纸香蕉</sub></h1>
 
 <p align="center">
   <strong>面向未来的工业级学术绘图引擎</strong><br>
