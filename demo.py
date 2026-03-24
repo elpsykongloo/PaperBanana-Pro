@@ -230,6 +230,8 @@ WORKSPACE_MODE_OPTIONS = [
     "📊 生成候选方案",
     "✨ 精修图像",
 ]
+EXAMPLE_SELECTOR_NONE_OPTION = "无"
+GENERATION_TEXTAREA_MAX_CHARS = 200_000
 GENERATION_MODE_INFO = {
     "demo_planner_critic": "标准流程：规划 → 首轮出图 → 评审 → 修正出图。速度更快、语义更稳，建议默认使用。",
     "demo_full": "增强风格流程：在标准流程基础上加入风格化阶段；当开启参考检索时，也会利用参考样例辅助生成。视觉表现更强，但耗时和不确定性也更高。",
@@ -5753,6 +5755,54 @@ def _apply_pending_refine_widget_state_updates() -> None:
         st.session_state[str(key)] = value
 
 
+def _normalize_generation_example_selector_value(value: Any) -> str:
+    normalized = clean_text(str(value or EXAMPLE_SELECTOR_NONE_OPTION)).strip()
+    return normalized or EXAMPLE_SELECTOR_NONE_OPTION
+
+
+def _get_generation_example_selector_previous_key(selector_key: str) -> str:
+    return f"{selector_key}__previous"
+
+
+def _prime_generation_example_selector_state(selector_key: str) -> None:
+    previous_key = _get_generation_example_selector_previous_key(selector_key)
+    if previous_key in st.session_state:
+        return
+    st.session_state[previous_key] = _normalize_generation_example_selector_value(
+        st.session_state.get(selector_key, EXAMPLE_SELECTOR_NONE_OPTION)
+    )
+
+
+def _apply_generation_example_selection(
+    *,
+    selector_key: str,
+    selected_value: str,
+    editor_key: str,
+    example_name: str,
+    example_value: str,
+) -> bool:
+    normalized_selected = _normalize_generation_example_selector_value(selected_value)
+    normalized_example_name = _normalize_generation_example_selector_value(example_name)
+    previous_key = _get_generation_example_selector_previous_key(selector_key)
+    previous_value = _normalize_generation_example_selector_value(
+        st.session_state.get(previous_key, EXAMPLE_SELECTOR_NONE_OPTION)
+    )
+    st.session_state[previous_key] = normalized_selected
+
+    # 示例加载必须是一次性动作，避免 rerun 持续覆盖用户刚编辑的大段文本。
+    if normalized_selected != normalized_example_name or previous_value == normalized_example_name:
+        return False
+
+    st.session_state[editor_key] = example_value
+    _queue_generation_widget_state_updates(
+        {
+            selector_key: EXAMPLE_SELECTOR_NONE_OPTION,
+            previous_key: EXAMPLE_SELECTOR_NONE_OPTION,
+        }
+    )
+    return True
+
+
 def _infer_generation_cost_label(
     retrieval_setting: str,
     max_critic_rounds: int,
@@ -7222,7 +7272,7 @@ def render_generation_workspace() -> None:
     visual_state_key = f"tab1_{task_name}_visual_intent"
     content_example_key = f"tab1_{task_name}_content_example_selector"
     visual_example_key = f"tab1_{task_name}_visual_example_selector"
-    example_options = ["无", task_config["example_name"]]
+    example_options = [EXAMPLE_SELECTOR_NONE_OPTION, task_config["example_name"]]
 
     content_editor_key = f"{content_state_key}_editor"
     visual_editor_key = f"{visual_state_key}_editor"
@@ -7231,36 +7281,58 @@ def render_generation_workspace() -> None:
         st.session_state[content_editor_key] = st.session_state.get(content_state_key, "")
     if visual_editor_key not in st.session_state:
         st.session_state[visual_editor_key] = st.session_state.get(visual_state_key, "")
+    _prime_generation_example_selector_state(content_example_key)
+    _prime_generation_example_selector_state(visual_example_key)
+
+    example_col1, example_col2 = st.columns([3, 2])
+    with example_col1:
+        content_example = st.selectbox(
+            task_config["content_selector_label"],
+            example_options,
+            key=content_example_key,
+        )
+    with example_col2:
+        visual_example = st.selectbox(
+            task_config["visual_selector_label"],
+            example_options,
+            key=visual_example_key,
+        )
+
+    content_example_applied = _apply_generation_example_selection(
+        selector_key=content_example_key,
+        selected_value=content_example,
+        editor_key=content_editor_key,
+        example_name=task_config["example_name"],
+        example_value=task_config["example_content"],
+    )
+    visual_example_applied = _apply_generation_example_selection(
+        selector_key=visual_example_key,
+        selected_value=visual_example,
+        editor_key=visual_editor_key,
+        example_name=task_config["example_name"],
+        example_value=task_config["example_visual_intent"],
+    )
+    if content_example_applied or visual_example_applied:
+        request_streamlit_rerun()
+        return
 
     with st.form("generation_request_form", clear_on_submit=False):
         col_input1, col_input2 = st.columns([3, 2])
         with col_input1:
-            content_example = st.selectbox(
-                task_config["content_selector_label"],
-                example_options,
-                key=content_example_key,
-            )
-            if content_example == task_config["example_name"]:
-                st.session_state[content_editor_key] = task_config["example_content"]
             input_content = st.text_area(
                 task_config["content_label"],
                 height=180,
+                max_chars=GENERATION_TEXTAREA_MAX_CHARS,
                 placeholder=task_config["content_placeholder"],
                 help=task_config["content_help"],
                 key=content_editor_key,
             )
 
         with col_input2:
-            visual_example = st.selectbox(
-                task_config["visual_selector_label"],
-                example_options,
-                key=visual_example_key,
-            )
-            if visual_example == task_config["example_name"]:
-                st.session_state[visual_editor_key] = task_config["example_visual_intent"]
             visual_intent = st.text_area(
                 task_config["visual_label"],
                 height=180,
+                max_chars=GENERATION_TEXTAREA_MAX_CHARS,
                 placeholder=task_config["visual_placeholder"],
                 help=task_config["visual_help"],
                 key=visual_editor_key,

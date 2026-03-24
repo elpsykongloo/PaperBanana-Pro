@@ -27,6 +27,74 @@ class DemoWorkbenchStateTest(unittest.TestCase):
     def setUp(self):
         demo.st.session_state.clear()
 
+    def test_generation_example_selection_applies_once_and_queues_selector_reset(self):
+        selector_key = "tab1_diagram_content_example_selector"
+        editor_key = "tab1_diagram_content_editor"
+        previous_key = demo._get_generation_example_selector_previous_key(selector_key)
+
+        demo._prime_generation_example_selector_state(selector_key)
+        applied = demo._apply_generation_example_selection(
+            selector_key=selector_key,
+            selected_value="PaperBanana 框架",
+            editor_key=editor_key,
+            example_name="PaperBanana 框架",
+            example_value="示例方法章节",
+        )
+
+        self.assertTrue(applied)
+        self.assertEqual(demo.st.session_state[editor_key], "示例方法章节")
+        self.assertEqual(demo.st.session_state[previous_key], "PaperBanana 框架")
+        self.assertEqual(
+            demo.st.session_state["_pending_generation_widget_updates"][selector_key],
+            demo.EXAMPLE_SELECTOR_NONE_OPTION,
+        )
+        self.assertEqual(
+            demo.st.session_state["_pending_generation_widget_updates"][previous_key],
+            demo.EXAMPLE_SELECTOR_NONE_OPTION,
+        )
+
+    def test_generation_example_selection_does_not_reapply_when_selector_stays_on_example(self):
+        selector_key = "tab1_diagram_content_example_selector"
+        editor_key = "tab1_diagram_content_editor"
+
+        demo._prime_generation_example_selector_state(selector_key)
+        first_applied = demo._apply_generation_example_selection(
+            selector_key=selector_key,
+            selected_value="PaperBanana 框架",
+            editor_key=editor_key,
+            example_name="PaperBanana 框架",
+            example_value="第一次示例",
+        )
+        demo.st.session_state[editor_key] = "用户后续手动改写"
+        second_applied = demo._apply_generation_example_selection(
+            selector_key=selector_key,
+            selected_value="PaperBanana 框架",
+            editor_key=editor_key,
+            example_name="PaperBanana 框架",
+            example_value="第二次示例",
+        )
+
+        self.assertTrue(first_applied)
+        self.assertFalse(second_applied)
+        self.assertEqual(demo.st.session_state[editor_key], "用户后续手动改写")
+
+    def test_generation_example_selection_ignores_stale_initial_example_state(self):
+        selector_key = "tab1_diagram_content_example_selector"
+        editor_key = "tab1_diagram_content_editor"
+        demo.st.session_state[selector_key] = "PaperBanana 框架"
+
+        demo._prime_generation_example_selector_state(selector_key)
+        applied = demo._apply_generation_example_selection(
+            selector_key=selector_key,
+            selected_value="PaperBanana 框架",
+            editor_key=editor_key,
+            example_name="PaperBanana 框架",
+            example_value="示例方法章节",
+        )
+
+        self.assertFalse(applied)
+        self.assertNotIn(editor_key, demo.st.session_state)
+
     def test_generation_candidate_decision_filter_scopes(self):
         results = [
             {"candidate_id": 0},
