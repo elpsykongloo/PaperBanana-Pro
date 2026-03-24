@@ -250,3 +250,7 @@ PaperBanana-Pro/
 ## 📄 License
 
 Apache-2.0
+
+## ⚠️ 专利与商用限制
+
+PaperBanana 的核心方法论（多 Agent 学术绘图流水线）由原作者在 Google 实习期间研发，**Google 已就相关工作流申请了专利**。这意味着 PaperBanana 的流水线逻辑 **不得用于商业用途**。PaperBanana-Pro 作为在原始项目基础上的独立演化版本，同样受此限制约束。请在使用时知悉。
