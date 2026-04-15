@@ -140,6 +140,42 @@ class BaseAgentProviderValidationTest(unittest.TestCase):
         finally:
             generation_utils.call_openai_with_retry_async = original
 
+    def test_image_api_routes_openrouter_to_chat_image_generation(self):
+        captured = {}
+
+        async def fake_call_openrouter_image_generation_with_retry_async(**kwargs):
+            captured.update(kwargs)
+            return ["fake-image-b64"]
+
+        original = generation_utils.call_openrouter_image_generation_with_retry_async
+        generation_utils.call_openrouter_image_generation_with_retry_async = fake_call_openrouter_image_generation_with_retry_async
+        try:
+            exp_config = types.SimpleNamespace(
+                provider="openrouter",
+                temperature=0.5,
+            )
+            agent = _DummyAgent(
+                model_name="sourceful/riverflow-v2-pro",
+                system_prompt="System prompt",
+                exp_config=exp_config,
+            )
+
+            result = asyncio.run(
+                agent.call_image_api(
+                    prompt="Draw a diagram.",
+                    aspect_ratio="16:9",
+                    image_resolution="4K",
+                )
+            )
+
+            self.assertEqual(result, ["fake-image-b64"])
+            self.assertEqual(captured["model_name"], "sourceful/riverflow-v2-pro")
+            self.assertEqual(captured["config"]["aspect_ratio"], "16:9")
+            self.assertEqual(captured["config"]["image_size"], "4K")
+            self.assertEqual(captured["contents"][0]["text"], "Draw a diagram.")
+        finally:
+            generation_utils.call_openrouter_image_generation_with_retry_async = original
+
     def test_image_api_routes_openai_compatible_to_openai_images(self):
         captured = {}
 

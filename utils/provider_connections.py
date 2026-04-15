@@ -635,11 +635,12 @@ def classify_probe_error(exc: Exception) -> tuple[str, int, str]:
             APITimeoutError,
             AuthenticationError,
             BadRequestError,
+            NotFoundError,
             PermissionDeniedError,
             RateLimitError,
         )
     except Exception:  # pragma: no cover
-        APIConnectionError = APIStatusError = APITimeoutError = AuthenticationError = BadRequestError = PermissionDeniedError = RateLimitError = tuple()  # type: ignore
+        APIConnectionError = APIStatusError = APITimeoutError = AuthenticationError = BadRequestError = NotFoundError = PermissionDeniedError = RateLimitError = tuple()  # type: ignore
 
     if APIStatusError and isinstance(exc, APIStatusError):
         http_status = int(getattr(exc, "status_code", 0) or 0)
@@ -664,6 +665,13 @@ def classify_probe_error(exc: Exception) -> tuple[str, int, str]:
         return "rate_limited", http_status or 429, message
     if PermissionDeniedError and isinstance(exc, PermissionDeniedError):
         return "provider_unavailable", http_status or 403, message
+    if NotFoundError and isinstance(exc, NotFoundError):
+        lowered = message.lower()
+        if "model" in lowered and ("not found" in lowered or "unknown" in lowered):
+            return "model_not_found", http_status or 404, message
+        if "<!doctype html" in lowered or "<html" in lowered:
+            return "response_incompatible", http_status or 404, message
+        return "base_url_error", http_status or 404, message
     if BadRequestError and isinstance(exc, BadRequestError):
         lowered = message.lower()
         if "model" in lowered and ("not found" in lowered or "unknown" in lowered):
@@ -671,7 +679,13 @@ def classify_probe_error(exc: Exception) -> tuple[str, int, str]:
         return "response_incompatible", http_status or 400, message
 
     lowered = message.lower()
-    if http_status == 401 or "unauthorized" in lowered or "invalid api key" in lowered:
+    if http_status == 401:
+        error_type = "invalid_credentials"
+    elif http_status == 404 and ("<!doctype html" in lowered or "<html" in lowered):
+        error_type = "response_incompatible"
+    elif "invalid api key" in lowered or (
+        "unauthorized" in lowered and http_status in {0, 400, 401, 403}
+    ):
         error_type = "invalid_credentials"
     elif http_status == 402 or "insufficient" in lowered or "credit" in lowered or "quota" in lowered:
         error_type = "insufficient_credits"
@@ -1041,6 +1055,19 @@ async def probe_image(connection: ProviderConnection) -> ProbeResult:
                     config={
                         "aspect_ratio": "1:1",
                         "quality": "2K",
+                    },
+                    max_attempts=1,
+                    retry_delay=0,
+                    error_context="provider_probe[image]",
+                )
+            elif connection.provider_type == "openrouter":
+                await generation_utils.call_openrouter_image_generation_with_retry_async(
+                    model_name=tested_model,
+                    prompt="A simple blue circle icon on white background.",
+                    config={
+                        "aspect_ratio": "1:1",
+                        "image_size": "1K",
+                        "output_format": "png",
                     },
                     max_attempts=1,
                     retry_delay=0,

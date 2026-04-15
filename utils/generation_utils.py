@@ -1458,6 +1458,212 @@ async def call_openai_with_retry_async(
     return response_text_list
 
 
+def _extract_base64_from_data_url(data_url: str) -> str:
+    """从 data URL 中提取纯 base64 字符串。"""
+    value = str(data_url or "").strip()
+    if not value:
+        return ""
+    if value.startswith("data:") and ";base64," in value:
+        return value.split(";base64,", 1)[1]
+    return value
+
+
+def _extract_openrouter_message_images(message: Any) -> List[str]:
+    """从 OpenRouter chat completion 消息中提取生成图像。"""
+    if message is None:
+        return []
+
+    images = getattr(message, "images", None)
+    if not images and hasattr(message, "model_extra"):
+        model_extra = getattr(message, "model_extra", None) or {}
+        if isinstance(model_extra, dict):
+            images = model_extra.get("images")
+    if not images and isinstance(message, dict):
+        images = message.get("images")
+
+    extracted_images: List[str] = []
+    for item in images or []:
+        image_payload = None
+        if isinstance(item, dict):
+            image_payload = item.get("image_url") or item.get("imageUrl")
+        else:
+            image_payload = (
+                getattr(item, "image_url", None)
+                or getattr(item, "imageUrl", None)
+                or (
+                    getattr(item, "model_extra", None) or {}
+                ).get("image_url")
+                or (
+                    getattr(item, "model_extra", None) or {}
+                ).get("imageUrl")
+            )
+
+        image_url = None
+        if isinstance(image_payload, dict):
+            image_url = image_payload.get("url")
+        elif image_payload is not None:
+            image_url = getattr(image_payload, "url", None)
+            if image_url is None and hasattr(image_payload, "model_extra"):
+                image_url = (getattr(image_payload, "model_extra", None) or {}).get("url")
+
+        image_b64 = _extract_base64_from_data_url(str(image_url or ""))
+        if image_b64:
+            extracted_images.append(image_b64)
+
+    return extracted_images
+
+
+def _openrouter_image_modalities_for_model(model_name: str, config: dict[str, Any]) -> List[str]:
+    explicit_modalities = config.get("modalities")
+    if explicit_modalities:
+        return [str(item).strip() for item in explicit_modalities if str(item).strip()]
+
+    normalized_model = str(model_name or "").strip().lower()
+    if "gemini" in normalized_model:
+        return ["image", "text"]
+    return ["image"]
+
+
+async def call_openrouter_image_generation_with_retry_async(
+    model_name,
+    prompt,
+    config,
+    *,
+    contents: Optional[List[Dict[str, Any]]] = None,
+    system_prompt: str = "",
+    max_attempts=5,
+    retry_delay=30,
+    error_context="",
+):
+    """通过 OpenRouter 的 chat/completions 多模态接口进行图像生成。"""
+    client = get_openai_client()
+    if client is None:
+        raise RuntimeError("OpenRouter Client 未初始化，请检查 OPENROUTER_API_KEY。")
+
+    prompt_text = str(prompt or "").strip()
+    request_contents = list(contents or [])
+    if request_contents:
+        normalized_contents: List[Dict[str, Any]] = []
+        prompt_inserted = False
+        for item in request_contents:
+            if item.get("type") == "text" and not prompt_inserted:
+                normalized_contents.append({"type": "text", "text": prompt_text or str(item.get("text", "") or "")})
+                prompt_inserted = True
+            else:
+                normalized_contents.append(item)
+        if not prompt_inserted:
+            normalized_contents.insert(0, {"type": "text", "text": prompt_text})
+    else:
+        normalized_contents = [{"type": "text", "text": prompt_text}]
+
+    messages: List[Dict[str, Any]] = []
+    if str(system_prompt or "").strip():
+        messages.append({"role": "system", "content": str(system_prompt).strip()})
+    messages.append(
+        {
+            "role": "user",
+            "content": _convert_to_openai_format(normalized_contents),
+        }
+    )
+
+    image_config: Dict[str, Any] = {}
+    aspect_ratio = str(config.get("aspect_ratio", "") or "").strip()
+    image_size = str(config.get("image_size", "") or "").strip()
+    if aspect_ratio:
+        image_config["aspect_ratio"] = aspect_ratio
+    if image_size:
+        image_config["image_size"] = image_size
+    if config.get("font_inputs"):
+        image_config["font_inputs"] = config["font_inputs"]
+    if config.get("super_resolution_references"):
+        image_config["super_resolution_references"] = config["super_resolution_references"]
+
+    extra_body: Dict[str, Any] = {
+        "modalities": _openrouter_image_modalities_for_model(model_name, config),
+    }
+    if image_config:
+        extra_body["image_config"] = image_config
+    output_format = str(config.get("output_format", "") or "").strip()
+    if output_format:
+        extra_body["output_format"] = output_format
+
+    last_exception: Exception | None = None
+    last_error_text = ""
+    for attempt in range(max_attempts):
+        try:
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                stream=False,
+                extra_body=extra_body,
+            )
+            response_images: List[str] = []
+            for choice in getattr(response, "choices", []) or []:
+                message = getattr(choice, "message", None)
+                response_images.extend(_extract_openrouter_message_images(message))
+            if response_images:
+                return response_images
+
+            last_error_text = "OpenRouter 图像生成未返回图片字段"
+            _emit_runtime_event(
+                level="WARNING",
+                kind="warning",
+                source="GenerationUtils",
+                job_type="generation",
+                provider="openrouter",
+                model=model_name,
+                attempt=attempt + 1,
+                status="retrying",
+                message="OpenRouter 图像生成未返回图片字段，将继续重试",
+            )
+            logger.warning("OpenRouter 图像生成失败，未返回图片字段")
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(retry_delay)
+            continue
+        except Exception as e:
+            last_exception = e
+            last_error_text = str(e)
+            context_msg = f" for {error_context}" if error_context else ""
+            _emit_runtime_event(
+                level="WARNING",
+                kind="retry",
+                source="GenerationUtils",
+                job_type="generation",
+                provider="openrouter",
+                model=model_name,
+                attempt=attempt + 1,
+                status="retrying",
+                message=f"OpenRouter 图像生成第 {attempt + 1}/{max_attempts} 次尝试失败，{retry_delay}s 后重试",
+                details=f"{context_msg}: {e}",
+            )
+            logger.warning(
+                "OpenRouter 图像生成第 %s 次尝试失败%s，%ss 后重试",
+                attempt + 1,
+                context_msg,
+                retry_delay,
+            )
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(retry_delay)
+
+    context_msg = f" for {error_context}" if error_context else ""
+    failure_message = f"OpenRouter 图像生成在 {max_attempts} 次尝试后仍然失败{context_msg}"
+    if last_error_text:
+        failure_message = f"{failure_message}: {last_error_text}"
+    _emit_runtime_event(
+        level="ERROR",
+        kind="error",
+        source="GenerationUtils",
+        job_type="generation",
+        provider="openrouter",
+        model=model_name,
+        status="failed",
+        message=f"OpenRouter 图像生成在 {max_attempts} 次尝试后仍然失败",
+        details=failure_message,
+    )
+    logger.error("OpenRouter 图像生成全部 %s 次尝试失败%s", max_attempts, context_msg)
+    raise RuntimeError(failure_message) from last_exception
+
+
 async def call_openai_image_generation_with_retry_async(
     model_name, prompt, config, max_attempts=5, retry_delay=30, error_context=""
 ):

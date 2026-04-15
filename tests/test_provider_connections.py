@@ -1,4 +1,5 @@
 import sys
+import shutil
 import tempfile
 import types
 import unittest
@@ -37,9 +38,10 @@ class _StatusError(RuntimeError):
 
 class ProviderConnectionsTest(unittest.TestCase):
     def _prepare_root(self) -> Path:
-        temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(temp_dir.cleanup)
-        root = Path(temp_dir.name)
+        base_dir = Path(__file__).resolve().parents[1] / ".tmp_tests" / "provider_connections"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        root = Path(tempfile.mkdtemp(dir=base_dir))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
         config_dir = root / "configs"
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "model_config.yaml").write_text(CONFIG_YAML, encoding="utf-8")
@@ -298,6 +300,34 @@ class ProviderConnectionsTest(unittest.TestCase):
         self.assertEqual(calls[1]["config"]["response_modalities"], ["IMAGE"])
         self.assertIn("generate_content_image_only", result.raw_excerpt)
 
+    def test_probe_image_routes_openrouter_to_chat_image_helper(self):
+        connection = ProviderConnection(
+            connection_id="openrouter",
+            display_name="OpenRouter",
+            provider_type="openrouter",
+            protocol_family="openai",
+            base_url="https://openrouter.ai/api/v1",
+            image_model="sourceful/riverflow-v2-pro",
+            api_key="secret",
+            supports_image=True,
+        )
+        captured = {}
+
+        async def fake_call_openrouter_image_generation_with_retry_async(**kwargs):
+            captured.update(kwargs)
+            return ["fake-image-b64"]
+
+        with patch(
+            "utils.generation_utils.call_openrouter_image_generation_with_retry_async",
+            side_effect=fake_call_openrouter_image_generation_with_retry_async,
+        ):
+            result = run_async_probe(probe_image(connection))
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(captured["model_name"], "sourceful/riverflow-v2-pro")
+        self.assertEqual(captured["config"]["aspect_ratio"], "1:1")
+        self.assertEqual(captured["config"]["image_size"], "1K")
+
     def test_probe_connection_emits_stage_callbacks(self):
         connection = ProviderConnection(
             connection_id="custom-openai",
@@ -349,6 +379,12 @@ class ProviderConnectionsTest(unittest.TestCase):
 
         error_type, status_code, _ = classify_probe_error(_StatusError("model not found", 404))
         self.assertEqual(error_type, "model_not_found")
+        self.assertEqual(status_code, 404)
+
+        error_type, status_code, _ = classify_probe_error(
+            _StatusError("<!DOCTYPE html><html><title>Not Found</title>unauthorized</html>", 404)
+        )
+        self.assertEqual(error_type, "response_incompatible")
         self.assertEqual(status_code, 404)
 
     def test_write_connection_probe_result_updates_local_metadata(self):

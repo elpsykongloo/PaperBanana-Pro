@@ -220,7 +220,23 @@ class BaseAgent(ABC):
                 error_context=error_context,
             )
 
-        if provider in {"openrouter", "openai_compatible"}:
+        if provider == "openrouter":
+            return await generation_utils.call_openrouter_image_generation_with_retry_async(
+                model_name=_model,
+                prompt=prompt,
+                contents=_contents,
+                system_prompt=_sys,
+                config={
+                    "aspect_ratio": aspect_ratio,
+                    "image_size": image_resolution,
+                    "output_format": "png",
+                },
+                max_attempts=max_attempts,
+                retry_delay=retry_delay,
+                error_context=error_context,
+            )
+
+        if provider == "openai_compatible":
             return await generation_utils.call_openai_image_generation_with_retry_async(
                 model_name=_model,
                 prompt=prompt,

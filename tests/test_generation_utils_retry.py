@@ -118,6 +118,72 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
                         error_context="visualizer[test]",
                     )
 
+    async def test_openrouter_image_helper_extracts_images_from_message_model_extra(self):
+        fake_message = SimpleNamespace(
+            model_extra={
+                "images": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,ZmFrZS1pbWFnZS1iNjQ=",
+                        },
+                    }
+                ]
+            }
+        )
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=AsyncMock(
+                        return_value=SimpleNamespace(
+                            choices=[SimpleNamespace(message=fake_message)],
+                        )
+                    ),
+                )
+            )
+        )
+
+        with patch.object(generation_utils, "get_openai_client", return_value=fake_client):
+            result = await generation_utils.call_openrouter_image_generation_with_retry_async(
+                model_name="sourceful/riverflow-v2-pro",
+                prompt="draw a circle",
+                config={
+                    "aspect_ratio": "1:1",
+                    "image_size": "1K",
+                    "output_format": "png",
+                },
+                max_attempts=1,
+                retry_delay=0,
+                error_context="visualizer[test]",
+            )
+
+        self.assertEqual(result, ["ZmFrZS1pbWFnZS1iNjQ="])
+
+    async def test_openrouter_image_retry_exhaustion_raises_with_context(self):
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=AsyncMock(side_effect=RuntimeError("openrouter boom")),
+                )
+            )
+        )
+
+        with patch.object(generation_utils, "get_openai_client", return_value=fake_client):
+            with patch("utils.generation_utils.asyncio.sleep", new=AsyncMock()):
+                with self.assertRaisesRegex(RuntimeError, "visualizer\\[test\\].*openrouter boom"):
+                    await generation_utils.call_openrouter_image_generation_with_retry_async(
+                        model_name="sourceful/riverflow-v2-pro",
+                        prompt="draw a circle",
+                        config={
+                            "aspect_ratio": "1:1",
+                            "image_size": "1K",
+                            "output_format": "png",
+                        },
+                        max_attempts=2,
+                        retry_delay=0,
+                        error_context="visualizer[test]",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
