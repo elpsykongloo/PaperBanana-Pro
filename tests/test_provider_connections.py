@@ -27,6 +27,10 @@ from utils.provider_connections import (
 CONFIG_YAML = """defaults:
   model_name: gemini-default-text
   image_model_name: gemini-default-image
+openai:
+  model_name: openai-text
+  image_model_name: gpt-image-2
+  base_url: https://api.openai.com/v1
 """
 
 
@@ -327,6 +331,45 @@ class ProviderConnectionsTest(unittest.TestCase):
         self.assertEqual(captured["model_name"], "sourceful/riverflow-v2-pro")
         self.assertEqual(captured["config"]["aspect_ratio"], "1:1")
         self.assertEqual(captured["config"]["image_size"], "1K")
+
+    def test_list_provider_connections_includes_official_openai(self):
+        root = self._prepare_root()
+
+        connections = list_provider_connections(base_dir=root)
+        openai_connection = next(item for item in connections if item.connection_id == "openai")
+
+        self.assertEqual(openai_connection.provider_type, "openai")
+        self.assertEqual(openai_connection.protocol_family, "openai")
+        self.assertEqual(openai_connection.image_model, "gpt-image-2")
+        self.assertTrue(openai_connection.supports_image)
+
+    def test_probe_image_routes_openai_with_gpt_image_2_safe_options(self):
+        connection = ProviderConnection(
+            connection_id="openai",
+            display_name="OpenAI",
+            provider_type="openai",
+            protocol_family="openai",
+            image_model="gpt-image-2",
+            api_key="secret",
+            supports_image=True,
+        )
+        captured = {}
+
+        async def fake_call_openai_image_generation_with_retry_async(**kwargs):
+            captured.update(kwargs)
+            return ["fake-image-b64"]
+
+        with patch(
+            "utils.generation_utils.call_openai_image_generation_with_retry_async",
+            side_effect=fake_call_openai_image_generation_with_retry_async,
+        ):
+            result = run_async_probe(probe_image(connection))
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(captured["model_name"], "gpt-image-2")
+        self.assertEqual(captured["provider_type"], "openai")
+        self.assertNotEqual(captured["config"].get("background"), "transparent")
+        self.assertEqual(captured["config"].get("output_format"), "png")
 
     def test_probe_connection_emits_stage_callbacks(self):
         connection = ProviderConnection(

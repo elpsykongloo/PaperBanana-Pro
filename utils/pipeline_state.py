@@ -320,6 +320,7 @@ def collect_parse_error_round_keys(result: dict[str, Any]) -> list[str]:
 class RenderOptions:
     aspect_ratio: str
     image_resolution: str
+    image_generation_options: dict[str, Any]
 
 
 def get_render_options(
@@ -334,6 +335,7 @@ def get_render_options(
     return RenderOptions(
         aspect_ratio=str(additional_info.get("rounded_ratio", default_aspect_ratio)),
         image_resolution=str(additional_info.get("image_resolution", default_image_resolution)),
+        image_generation_options=dict(additional_info.get("image_generation_options", {}) or {}),
     )
 
 

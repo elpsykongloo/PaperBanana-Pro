@@ -19,6 +19,11 @@ evolink:
   base_url: https://api.evolink.ai
   model_name: evolink-text
   image_model_name: evolink-image
+openai:
+  api_key: yaml-openai-key
+  base_url: https://api.openai.com/v1
+  model_name: openai-text
+  image_model_name: gpt-image-2
 """
 
 PROVIDER_REGISTRY_YAML = """version: 1
@@ -121,9 +126,20 @@ class RuntimeSettingsTest(unittest.TestCase):
             self.assertEqual(defaults["api_key_default"], "yaml-evolink-key")
             self.assertEqual(defaults["base_url"], "https://api.evolink.ai")
 
-    def test_resolve_runtime_settings_rejects_unknown_provider(self):
-        with self.assertRaisesRegex(ValueError, "Unsupported provider"):
-            resolve_runtime_settings("openai")
+    def test_resolve_runtime_settings_supports_official_openai(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config_dir = root / "configs"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / "model_config.yaml").write_text(CONFIG_YAML, encoding="utf-8")
+
+            settings = resolve_runtime_settings("openai", base_dir=root)
+
+            self.assertEqual(settings.provider, "openai")
+            self.assertEqual(settings.connection_id, "openai")
+            self.assertEqual(settings.image_model_name, "gpt-image-2")
+            self.assertEqual(settings.api_key, "yaml-openai-key")
+            self.assertEqual(settings.base_url, "https://api.openai.com/v1")
 
     def test_build_runtime_context_delegates_to_generation_utils(self):
         settings = RuntimeSettings(

@@ -117,6 +117,7 @@ def create_sample_inputs(
     num_copies: int = 10,
     max_critic_rounds: int = 3,
     image_resolution: str = "2K",
+    image_generation_options: dict | None = None,
 ):
     """Create demo inputs for parallel candidate generation."""
     normalized_task = normalize_task_name(task_name)
@@ -129,6 +130,7 @@ def create_sample_inputs(
         "additional_info": {
             "rounded_ratio": aspect_ratio,
             "image_resolution": image_resolution,
+            "image_generation_options": dict(image_generation_options or {}),
         },
         "max_critic_rounds": max_critic_rounds,
     }

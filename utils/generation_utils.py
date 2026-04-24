@@ -35,6 +35,11 @@ import os
 from pathlib import Path
 
 from utils.config_loader import load_model_config, get_config_val
+from utils.image_generation_options import (
+    build_openai_image_request_params,
+    get_image_model_capabilities,
+    normalize_image_generation_options,
+)
 from utils.log_config import get_logger
 from utils.runtime_events import create_runtime_event
 
@@ -1468,6 +1473,37 @@ def _extract_base64_from_data_url(data_url: str) -> str:
     return value
 
 
+def _extract_openai_input_images(contents: Optional[List[Dict[str, Any]]] = None) -> list[tuple[bytes, str, str]]:
+    images: list[tuple[bytes, str, str]] = []
+    for index, item in enumerate(contents or []):
+        if item.get("type") != "image":
+            continue
+        source = item.get("source", {}) or {}
+        if source.get("type") != "base64":
+            continue
+        data = str(source.get("data", "") or "")
+        if not data:
+            continue
+        media_type = str(source.get("media_type", "image/png") or "image/png")
+        suffix = media_type.split("/", 1)[-1].split(";", 1)[0] or "png"
+        try:
+            images.append((base64.b64decode(data), media_type, f"reference_{index}.{suffix}"))
+        except Exception:
+            logger.warning("OpenAI 图像编辑跳过无法解码的参考图 index=%s", index)
+    return images
+
+
+def _extract_openai_response_images(response: Any) -> List[str]:
+    response_images: List[str] = []
+    for item in getattr(response, "data", []) or []:
+        b64_json = getattr(item, "b64_json", None)
+        if not b64_json and isinstance(item, dict):
+            b64_json = item.get("b64_json")
+        if b64_json:
+            response_images.append(str(b64_json))
+    return response_images
+
+
 def _extract_openrouter_message_images(message: Any) -> List[str]:
     """从 OpenRouter chat completion 消息中提取生成图像。"""
     if message is None:
@@ -1665,34 +1701,55 @@ async def call_openrouter_image_generation_with_retry_async(
 
 
 async def call_openai_image_generation_with_retry_async(
-    model_name, prompt, config, max_attempts=5, retry_delay=30, error_context=""
+    model_name,
+    prompt,
+    config,
+    *,
+    contents: Optional[List[Dict[str, Any]]] = None,
+    provider_type: str = "openai",
+    max_attempts=5,
+    retry_delay=30,
+    error_context="",
 ):
-    """原始 OpenAI 图像生成 API 异步调用（保留兼容性）"""
+    """通过 OpenAI Images API 进行图像生成或参考图编辑。"""
     client = get_openai_client()
     if client is None:
         raise RuntimeError("OpenAI Client 未初始化，请检查 OPENAI_API_KEY。")
-    size = config.get("size", "1536x1024")
-    quality = config.get("quality", "high")
-    background = config.get("background", "opaque")
-    output_format = config.get("output_format", "png")
 
-    gen_params = {
+    options = normalize_image_generation_options(
+        provider_type=provider_type,
+        model_name=model_name,
+        aspect_ratio=str(config.get("aspect_ratio", "1:1") or "1:1"),
+        image_resolution=str(config.get("image_resolution", "2K") or "2K"),
+        raw_options=config,
+    )
+    capabilities = get_image_model_capabilities(provider_type, model_name)
+    input_images = _extract_openai_input_images(contents)
+    is_edit_request = bool(input_images)
+    request_params = build_openai_image_request_params(options, capabilities, edit=is_edit_request)
+    gen_params: Dict[str, Any] = {
         "model": model_name,
         "prompt": prompt,
         "n": 1,
-        "size": size,
-        "quality": quality,
-        "background": background,
-        "output_format": output_format,
+        **request_params,
     }
+    if is_edit_request:
+        gen_params["image"] = [
+            (filename, BytesIO(image_bytes), media_type)
+            for image_bytes, media_type, filename in input_images
+        ]
 
     last_exception: Exception | None = None
     last_error_text = ""
     for attempt in range(max_attempts):
         try:
-            response = await client.images.generate(**gen_params)
-            if response.data and response.data[0].b64_json:
-                return [response.data[0].b64_json]
+            if is_edit_request:
+                response = await client.images.edit(**gen_params)
+            else:
+                response = await client.images.generate(**gen_params)
+            response_images = _extract_openai_response_images(response)
+            if response_images:
+                return response_images
             else:
                 last_error_text = "OpenAI 图像生成未返回数据"
                 _emit_runtime_event(

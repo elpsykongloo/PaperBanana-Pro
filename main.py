@@ -45,6 +45,7 @@ from utils.result_bundle import (
     write_result_bundle_async,
 )
 from utils.run_report import build_failure_manifest, build_result_summary
+from utils.image_generation_options import normalize_image_generation_options
 from utils.runtime_settings import DEFAULT_PROVIDER, build_runtime_context
 setup_logging("INFO", mode="cli")
 
@@ -180,9 +181,15 @@ async def main():
         "--provider",
         type=str,
         default=DEFAULT_PROVIDER,
-        choices=["gemini", "evolink", "openrouter"],
+        choices=["gemini", "evolink", "openrouter", "openai"],
         help=f"provider to use (default: {DEFAULT_PROVIDER})",
     )
+    parser.add_argument("--image_size", type=str, default="", help="image API size, e.g. auto or 1536x1024")
+    parser.add_argument("--image_quality", type=str, default="", help="image rendering quality")
+    parser.add_argument("--image_background", type=str, default="", help="image background option")
+    parser.add_argument("--image_output_format", type=str, default="", help="image output format")
+    parser.add_argument("--image_output_compression", type=int, default=-1, help="jpeg/webp compression 0-100")
+    parser.add_argument("--image_moderation", type=str, default="", help="image moderation: auto or low")
     parser.add_argument(
         "--concurrency_mode",
         type=str,
@@ -253,6 +260,24 @@ async def main():
     )
     with open(input_filename, "r", encoding="utf-8") as f:
         data_list = json.load(f)
+    image_generation_options = normalize_image_generation_options(
+        provider_type=exp_config.provider,
+        model_name=exp_config.image_model_name,
+        raw_options={
+            "size": args.image_size,
+            "quality": args.image_quality,
+            "background": args.image_background,
+            "output_format": args.image_output_format,
+            "output_compression": None if args.image_output_compression < 0 else args.image_output_compression,
+            "moderation": args.image_moderation,
+        },
+    ).to_dict()
+    for item in data_list:
+        if not isinstance(item, dict):
+            continue
+        additional_info = item.setdefault("additional_info", {})
+        if isinstance(additional_info, dict):
+            additional_info.setdefault("image_generation_options", image_generation_options)
 
     resume_source_path, resume_checkpoint = resolve_resume_source_path(
         resume_flag=bool(args.resume),

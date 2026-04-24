@@ -93,6 +93,7 @@ class VanillaAgent(BaseAgent):
                 contents=content_list,
                 aspect_ratio=render_options.aspect_ratio,
                 image_resolution=render_options.image_resolution,
+                image_generation_options=render_options.image_generation_options,
                 max_attempts=5,
                 retry_delay=30,
             )

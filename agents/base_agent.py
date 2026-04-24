@@ -64,7 +64,7 @@ class BaseAgent(ABC):
         error_context: str = "",
     ) -> List[str]:
         """
-        统一的文本生成 API 调用，根据 provider 自动路由到 Evolink / Gemini。
+        统一的文本生成 API 调用，根据 provider 自动路由到 Evolink / Gemini / OpenAI。
 
         Args:
             contents: 通用内容列表（文本和图片混合）
@@ -117,7 +117,7 @@ class BaseAgent(ABC):
                 error_context=error_context,
             )
 
-        if provider in {"openrouter", "openai_compatible"}:
+        if provider in {"openrouter", "openai", "openai_compatible"}:
             return await generation_utils.call_openai_with_retry_async(
                 model_name=_model,
                 contents=contents,
@@ -146,6 +146,7 @@ class BaseAgent(ABC):
         temperature: float | None = None,
         aspect_ratio: str = "1:1",
         image_resolution: str = "2K",
+        image_generation_options: Dict[str, Any] | None = None,
         image_urls: List[str] | None = None,
         max_output_tokens: int = 50000,
         max_attempts: int = 5,
@@ -163,6 +164,7 @@ class BaseAgent(ABC):
             temperature: 温度参数
             aspect_ratio: 宽高比
             image_resolution: 图像分辨率
+            image_generation_options: 归一化后的图像生成参数
             image_urls: 参考图片 URL 列表（Evolink 用于 image-to-image）
             max_output_tokens: 最大输出 token 数
             max_attempts: 最大重试次数
@@ -241,11 +243,28 @@ class BaseAgent(ABC):
                 model_name=_model,
                 prompt=prompt,
                 config={
-                    "size": "1536x1024",
-                    "quality": "high",
-                    "background": "opaque",
-                    "output_format": "png",
+                    "aspect_ratio": aspect_ratio,
+                    "image_resolution": image_resolution,
+                    **dict(image_generation_options or {}),
                 },
+                contents=_contents,
+                provider_type=provider,
+                max_attempts=max_attempts,
+                retry_delay=retry_delay,
+                error_context=error_context,
+            )
+
+        if provider == "openai":
+            return await generation_utils.call_openai_image_generation_with_retry_async(
+                model_name=_model,
+                prompt=prompt,
+                config={
+                    "aspect_ratio": aspect_ratio,
+                    "image_resolution": image_resolution,
+                    **dict(image_generation_options or {}),
+                },
+                contents=_contents,
+                provider_type=provider,
                 max_attempts=max_attempts,
                 retry_delay=retry_delay,
                 error_context=error_context,

@@ -28,6 +28,10 @@ PROVIDER_UI_META = {
         "api_key_label": "OpenRouter API Key",
         "api_key_help": "OpenRouter API 密钥，从 openrouter.ai 获取",
     },
+    "openai": {
+        "api_key_label": "OpenAI API Key",
+        "api_key_help": "OpenAI 官方 API 密钥；默认用于 GPT Image 2。",
+    },
     "openai_compatible": {
         "api_key_label": "兼容 API Key",
         "api_key_help": "任意 OpenAI 兼容服务的 API 密钥；若服务无需密钥，可留空。",

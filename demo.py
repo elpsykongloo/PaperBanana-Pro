@@ -173,6 +173,10 @@ try:
         normalize_retrieval_setting,
     )
     from utils.run_report import build_failure_manifest, build_result_summary
+    from utils.image_generation_options import (
+        get_image_model_capabilities,
+        normalize_image_generation_options,
+    )
     from utils.runtime_settings import (
         DEFAULT_PROVIDER,
         build_all_provider_ui_defaults,
@@ -1236,6 +1240,94 @@ def build_api_key_storage_notice(
     if str(provider_defaults.get("api_key_default", "") or "").strip():
         return "已在本机保存当前 Provider 的密钥，刷新页面后仍会保留。"
     return "密钥只保存在当前电脑；输入后会自动写入本地 txt。"
+
+
+def render_image_generation_option_controls(
+    *,
+    provider_type: str,
+    image_model_name: str,
+    aspect_ratio: str,
+    image_resolution: str,
+) -> dict[str, Any]:
+    capabilities = get_image_model_capabilities(provider_type, image_model_name)
+    st.caption(f"当前图像能力：{capabilities.model_family}")
+
+    default_options = normalize_image_generation_options(
+        provider_type=provider_type,
+        model_name=image_model_name,
+        aspect_ratio=aspect_ratio,
+        image_resolution=image_resolution,
+    )
+    size = st.selectbox(
+        "OpenAI 输出尺寸",
+        list(capabilities.size_options),
+        index=list(capabilities.size_options).index(default_options.size),
+        key="tab1_image_size",
+        help="GPT Image 2 可使用 auto 或具体像素尺寸；旧 2K/4K 会自动映射到安全尺寸。",
+    )
+    quality = st.selectbox(
+        "OpenAI 渲染质量",
+        list(capabilities.quality_options),
+        index=list(capabilities.quality_options).index(default_options.quality),
+        key="tab1_image_quality",
+    )
+    background = st.selectbox(
+        "OpenAI 背景",
+        list(capabilities.background_options),
+        index=list(capabilities.background_options).index(default_options.background),
+        key="tab1_image_background",
+        help="GPT Image 2 当前不支持 transparent，界面会自动隐藏该选项。",
+    )
+    output_format = st.selectbox(
+        "OpenAI 输出格式",
+        list(capabilities.output_format_options),
+        index=list(capabilities.output_format_options).index(default_options.output_format),
+        key="tab1_image_output_format",
+    )
+    output_compression = None
+    if capabilities.supports_output_compression and output_format in {"jpeg", "webp"}:
+        output_compression = int(
+            st.slider(
+                "OpenAI 输出压缩",
+                min_value=0,
+                max_value=100,
+                value=100,
+                key="tab1_image_output_compression",
+                help="仅 jpeg/webp 生效；png 不发送该参数。",
+            )
+        )
+    moderation = "auto"
+    if capabilities.supports_moderation:
+        moderation = st.selectbox(
+            "OpenAI 审核强度",
+            ["auto", "low"],
+            key="tab1_image_moderation",
+        )
+    input_fidelity = "auto"
+    if capabilities.supports_input_fidelity:
+        input_fidelity = st.selectbox(
+            "OpenAI 参考图保真度",
+            ["auto", "low", "high"],
+            key="tab1_image_input_fidelity",
+            help="仅带参考图的编辑链路生效。",
+        )
+
+    options = normalize_image_generation_options(
+        provider_type=provider_type,
+        model_name=image_model_name,
+        aspect_ratio=aspect_ratio,
+        image_resolution=image_resolution,
+        raw_options={
+            "size": size,
+            "quality": quality,
+            "background": background,
+            "output_format": output_format,
+            "output_compression": output_compression,
+            "moderation": moderation,
+            "input_fidelity": input_fidelity,
+        },
+    )
+    return options.to_dict()
 
 
 def get_selected_connection_runtime_id(prefix: str, selected_connection_id: str) -> str:
@@ -3810,6 +3902,7 @@ def start_generation_background_job(
     max_critic_rounds: int,
     aspect_ratio: str,
     image_resolution: str,
+    image_generation_options: dict[str, Any] | None = None,
     content: str,
     visual_intent: str,
 ) -> str:
@@ -3896,6 +3989,7 @@ def start_generation_background_job(
                     num_copies=requested_candidates,
                     max_critic_rounds=runtime_settings.max_critic_rounds,
                     image_resolution=image_resolution,
+                    image_generation_options=image_generation_options,
                 )
 
                 def on_progress(done_count: int, total_count: int, effective_count: int):
@@ -5771,6 +5865,7 @@ def _build_generation_effective_settings(
     effective_settings = dict(advanced_settings)
     if not get_task_ui_config(task_name)["uses_render_controls"]:
         effective_settings["image_resolution"] = ""
+        effective_settings["image_generation_options"] = {}
     return effective_settings
 
 
@@ -6254,7 +6349,14 @@ def render_generation_sidebar_controls() -> dict:
             provider_for_resolution = (
                 selected_connection.provider_type if selected_connection is not None else DEFAULT_PROVIDER
             )
-            resolution_options = ["1K", "2K", "4K"] if provider_for_resolution == "gemini" else ["2K", "4K"]
+            image_model_for_resolution = (
+                selected_connection.image_model if selected_connection is not None else ""
+            )
+            resolution_capabilities = get_image_model_capabilities(
+                provider_for_resolution,
+                image_model_for_resolution,
+            )
+            resolution_options = list(resolution_capabilities.legacy_resolution_options)
             default_resolution = st.session_state.get("tab1_image_resolution", "2K")
             if default_resolution not in resolution_options:
                 default_resolution = "2K" if "2K" in resolution_options else resolution_options[0]
@@ -6417,8 +6519,23 @@ def render_generation_sidebar_controls() -> dict:
                     key="tab1_image_model_name",
                     help="用于图像生成的模型名称",
                 )
+            if provider_defaults.get("provider_type") in {"openai", "openai_compatible"}:
+                image_generation_options = render_image_generation_option_controls(
+                    provider_type=str(provider_defaults.get("provider_type", "openai") or "openai"),
+                    image_model_name=image_model_name,
+                    aspect_ratio=aspect_ratio,
+                    image_resolution=image_resolution,
+                )
+            else:
+                image_generation_options = normalize_image_generation_options(
+                    provider_type=str(provider_defaults.get("provider_type", DEFAULT_PROVIDER) or DEFAULT_PROVIDER),
+                    model_name=image_model_name,
+                    aspect_ratio=aspect_ratio,
+                    image_resolution=image_resolution,
+                ).to_dict()
         else:
             image_model_name = ""
+            image_generation_options = {}
             st.caption("当前任务不会调用图像生成模型，最终图像由文本模型生成的 Matplotlib 代码渲染。")
 
         supports_image = bool(st.session_state.get(state_keys["supports_image"], provider_defaults.get("supports_image", True)))
@@ -6525,6 +6642,7 @@ def render_generation_sidebar_controls() -> dict:
         "max_concurrent": int(max_concurrent),
         "aspect_ratio": aspect_ratio,
         "image_resolution": image_resolution,
+        "image_generation_options": image_generation_options,
         "max_critic_rounds": int(max_critic_rounds),
         "provider": runtime_connection_id,
         "connection_id": runtime_connection_id,
@@ -7455,6 +7573,7 @@ def render_generation_workspace() -> None:
                 max_critic_rounds=int(effective_settings["max_critic_rounds"]),
                 aspect_ratio=advanced_settings["aspect_ratio"],
                 image_resolution=effective_settings["image_resolution"],
+                image_generation_options=effective_settings.get("image_generation_options", {}),
                 content=content_for_generation,
                 visual_intent=visual_intent,
             )

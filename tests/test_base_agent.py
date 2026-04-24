@@ -140,6 +140,34 @@ class BaseAgentProviderValidationTest(unittest.TestCase):
         finally:
             generation_utils.call_openai_with_retry_async = original
 
+    def test_text_api_routes_official_openai_to_openai_chat(self):
+        captured = {}
+
+        async def fake_call_openai_with_retry_async(**kwargs):
+            captured.update(kwargs)
+            return ["ok"]
+
+        original = generation_utils.call_openai_with_retry_async
+        generation_utils.call_openai_with_retry_async = fake_call_openai_with_retry_async
+        try:
+            exp_config = types.SimpleNamespace(
+                provider="openai",
+                temperature=0.5,
+            )
+            agent = _DummyAgent(
+                model_name="gpt-5.5",
+                system_prompt="System prompt",
+                exp_config=exp_config,
+            )
+
+            result = asyncio.run(agent.call_text_api([{"type": "text", "text": "hello"}]))
+
+            self.assertEqual(result, ["ok"])
+            self.assertEqual(captured["model_name"], "gpt-5.5")
+            self.assertEqual(captured["config"]["max_completion_tokens"], 50000)
+        finally:
+            generation_utils.call_openai_with_retry_async = original
+
     def test_image_api_routes_openrouter_to_chat_image_generation(self):
         captured = {}
 

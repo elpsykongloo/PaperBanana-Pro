@@ -19,13 +19,14 @@ from utils.config_loader import (
     load_model_config,
     load_provider_defaults,
 )
+from utils.image_generation_options import normalize_image_generation_options
 
 
 DEFAULT_PROVIDER_REGISTRY_VERSION = 1
 DEFAULT_PROVIDER_REGISTRY_FILE = "provider_registry.yaml"
 DEFAULT_CONNECTION_META_FILE = "provider_connection_meta.json"
 CUSTOM_PROVIDER_DIRNAME = "providers"
-BUILTIN_CONNECTION_IDS = ("gemini", "evolink", "openrouter")
+BUILTIN_CONNECTION_IDS = ("gemini", "evolink", "openrouter", "openai")
 CUSTOM_PROVIDER_TYPE = "openai_compatible"
 SUPPORTED_PROVIDER_TYPES = (*BUILTIN_CONNECTION_IDS, CUSTOM_PROVIDER_TYPE)
 CONNECTION_ID_RE = re.compile(r"[^a-z0-9-]+")
@@ -259,18 +260,20 @@ def _build_builtin_connection(
     repo_root = _repo_root(base_dir)
     config_data = model_config_data if model_config_data is not None else load_model_config(repo_root)
     defaults = load_provider_defaults(connection_id, config_data, base_dir=repo_root)
-    protocol_family = "openai" if connection_id == "openrouter" else connection_id
+    protocol_family = "openai" if connection_id in {"openrouter", "openai"} else connection_id
     model_discovery_mode = {
         "gemini": "static",
         "evolink": "manual",
         "openrouter": "hybrid",
+        "openai": "hybrid",
     }.get(connection_id, "manual")
     display_name = {
         "gemini": "Gemini",
         "evolink": "Evolink",
         "openrouter": "OpenRouter",
+        "openai": "OpenAI",
     }.get(connection_id, connection_id)
-    supports_image = connection_id in {"gemini", "evolink", "openrouter"}
+    supports_image = connection_id in {"gemini", "evolink", "openrouter", "openai"}
     allowlist = []
     for item in (defaults.get("model_name", ""), defaults.get("image_model_name", "")):
         normalized = str(item or "").strip()
@@ -286,6 +289,7 @@ def _build_builtin_connection(
             "gemini": "GOOGLE_API_KEY",
             "evolink": "EVOLINK_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
+            "openai": "OPENAI_API_KEY",
         }[connection_id],
         text_model=str(defaults.get("model_name", "") or "").strip(),
         image_model=str(defaults.get("image_model_name", "") or "").strip(),
@@ -1074,15 +1078,17 @@ async def probe_image(connection: ProviderConnection) -> ProbeResult:
                     error_context="provider_probe[image]",
                 )
             else:
+                probe_options = normalize_image_generation_options(
+                    provider_type=connection.provider_type,
+                    model_name=tested_model,
+                    aspect_ratio="1:1",
+                    image_resolution="1K",
+                ).to_dict()
                 await generation_utils.call_openai_image_generation_with_retry_async(
                     model_name=tested_model,
                     prompt="A simple blue circle icon on white background.",
-                    config={
-                        "size": "1024x1024",
-                        "quality": "low",
-                        "background": "opaque",
-                        "output_format": "png",
-                    },
+                    config=probe_options,
+                    provider_type=connection.provider_type,
                     max_attempts=1,
                     retry_delay=0,
                     error_context="provider_probe[image]",

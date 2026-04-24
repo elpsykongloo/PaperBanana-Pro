@@ -16,6 +16,7 @@ SECRET_FILE_MAP = {
     ("api_keys", "anthropic_api_key"): "anthropic_api_key.txt",
     ("evolink", "api_key"): "evolink_api_key.txt",
     ("openrouter", "api_key"): "openrouter_api_key.txt",
+    ("openai", "api_key"): "openai_api_key.txt",
 }
 
 PROVIDER_CONFIG_MAP = {
@@ -54,6 +55,18 @@ PROVIDER_CONFIG_MAP = {
         "base_url_key": "base_url",
         "base_url_env": "OPENROUTER_BASE_URL",
         "default_base_url": "https://openrouter.ai/api/v1",
+    },
+    "openai": {
+        "model_section": "openai",
+        "api_section": "openai",
+        "api_key": "api_key",
+        "api_env": "OPENAI_API_KEY",
+        "default_model_name": "gpt-5.4-mini",
+        "default_image_model_name": "gpt-image-2",
+        "base_url_section": "openai",
+        "base_url_key": "base_url",
+        "base_url_env": "OPENAI_BASE_URL",
+        "default_base_url": "https://api.openai.com/v1",
     },
 }
 

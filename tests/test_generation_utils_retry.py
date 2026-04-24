@@ -118,6 +118,72 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
                         error_context="visualizer[test]",
                     )
 
+    async def test_gpt_image_2_generate_sanitizes_transparent_and_png_compression(self):
+        fake_response = SimpleNamespace(data=[SimpleNamespace(b64_json="fake-image-b64")])
+        fake_client = SimpleNamespace(
+            images=SimpleNamespace(
+                generate=AsyncMock(return_value=fake_response),
+            )
+        )
+
+        with patch.object(generation_utils, "get_openai_client", return_value=fake_client):
+            result = await generation_utils.call_openai_image_generation_with_retry_async(
+                model_name="gpt-image-2",
+                prompt="draw a circle",
+                config={
+                    "aspect_ratio": "16:9",
+                    "image_resolution": "4K",
+                    "background": "transparent",
+                    "output_format": "png",
+                    "output_compression": 50,
+                },
+                max_attempts=1,
+                retry_delay=0,
+            )
+
+        self.assertEqual(result, ["fake-image-b64"])
+        sent = fake_client.images.generate.call_args.kwargs
+        self.assertEqual(sent["model"], "gpt-image-2")
+        self.assertEqual(sent["size"], "2560x1440")
+        self.assertEqual(sent["background"], "auto")
+        self.assertEqual(sent["output_format"], "png")
+        self.assertNotIn("output_compression", sent)
+
+    async def test_gpt_image_2_edit_uses_images_edit_for_reference_image(self):
+        fake_response = SimpleNamespace(data=[SimpleNamespace(b64_json="edited-image-b64")])
+        fake_client = SimpleNamespace(
+            images=SimpleNamespace(
+                generate=AsyncMock(side_effect=AssertionError("不应走 generate")),
+                edit=AsyncMock(return_value=fake_response),
+            )
+        )
+
+        with patch.object(generation_utils, "get_openai_client", return_value=fake_client):
+            result = await generation_utils.call_openai_image_generation_with_retry_async(
+                model_name="gpt-image-2",
+                prompt="polish this image",
+                config={"size": "auto", "output_format": "jpeg", "output_compression": 80},
+                contents=[
+                    {"type": "text", "text": "polish this image"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "ZmFrZS1pbWFnZQ==",
+                        },
+                    },
+                ],
+                max_attempts=1,
+                retry_delay=0,
+            )
+
+        self.assertEqual(result, ["edited-image-b64"])
+        sent = fake_client.images.edit.call_args.kwargs
+        self.assertEqual(sent["model"], "gpt-image-2")
+        self.assertEqual(sent["output_compression"], 80)
+        self.assertEqual(len(sent["image"]), 1)
+
     async def test_openrouter_image_helper_extracts_images_from_message_model_extra(self):
         fake_message = SimpleNamespace(
             model_extra={
