@@ -45,6 +45,12 @@ from utils.runtime_events import create_runtime_event
 
 logger = get_logger("GenerationUtils")
 
+_SENSITIVE_TOKEN_RE = re.compile(r"\b(sk-[A-Za-z0-9_\-]{5})[A-Za-z0-9_\-]{8,}([A-Za-z0-9_\-]{4})\b")
+_BEARER_TOKEN_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9_\-\.]{12,})")
+_SECRET_FIELD_RE = re.compile(
+    r"(?i)(api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|secret)(['\"\s:=]+)([^,'\"\s}{]{8,})"
+)
+
 # ==================== 配置加载 ====================
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -335,12 +341,22 @@ def _safe_text_for_log(value: Any, max_len: int = 6000) -> str:
     except Exception:
         text = repr(value)
     text = text.replace("\x00", "\\x00")
+    text = _redact_sensitive_text(text)
     try:
         safe = text.encode("utf-8", errors="backslashreplace").decode("utf-8", errors="ignore")
     except Exception:
         safe = repr(text)
     if len(safe) > max_len:
         return safe[:max_len] + f"...(truncated {len(safe) - max_len} chars)"
+    return safe
+
+
+def _redact_sensitive_text(text: str) -> str:
+    """脱敏 API key、Bearer token 等敏感字段，避免上游错误体原样进日志。"""
+    safe = str(text or "")
+    safe = _SENSITIVE_TOKEN_RE.sub(r"\1***\2", safe)
+    safe = _BEARER_TOKEN_RE.sub(r"\1***", safe)
+    safe = _SECRET_FIELD_RE.sub(r"\1\2***", safe)
     return safe
 
 
@@ -1503,14 +1519,99 @@ def _extract_openai_input_images(contents: Optional[List[Dict[str, Any]]] = None
     return images
 
 
-def _extract_openai_response_images(response: Any) -> List[str]:
+def _iter_openai_image_payloads(response: Any) -> list[Any]:
+    payloads: list[Any] = []
+    for attr_name in ("data", "output", "images"):
+        values = getattr(response, attr_name, None)
+        if values:
+            payloads.extend(list(values))
+    if isinstance(response, dict):
+        for key in ("data", "output", "images"):
+            values = response.get(key)
+            if values:
+                payloads.extend(list(values if isinstance(values, list) else [values]))
+    if not payloads:
+        payloads.append(response)
+    return payloads
+
+
+def _extract_url_field(payload: Any) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        value = payload.strip()
+        if value.startswith("data:") or value.startswith("http://") or value.startswith("https://"):
+            return value
+        return ""
+    if isinstance(payload, dict):
+        for key in ("url", "image_url", "file_url"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                nested_url = _extract_url_field(value)
+                if nested_url:
+                    return nested_url
+            elif isinstance(value, str):
+                nested_url = _extract_url_field(value)
+                if nested_url:
+                    return nested_url
+        for key in ("image", "content", "result"):
+            nested_url = _extract_url_field(payload.get(key))
+            if nested_url:
+                return nested_url
+        return ""
+    for key in ("url", "image_url", "file_url", "image", "content", "result"):
+        nested_url = _extract_url_field(getattr(payload, key, None))
+        if nested_url:
+            return nested_url
+    if hasattr(payload, "model_extra"):
+        return _extract_url_field(getattr(payload, "model_extra", None) or {})
+    return ""
+
+
+async def _fetch_image_url_as_base64(url: str) -> str:
+    normalized_url = str(url or "").strip()
+    if not normalized_url:
+        return ""
+    if normalized_url.startswith("data:"):
+        return _extract_base64_from_data_url(normalized_url)
+    if not (normalized_url.startswith("http://") or normalized_url.startswith("https://")):
+        return ""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(normalized_url)
+            response.raise_for_status()
+            content_type = str(response.headers.get("content-type", "") or "").lower()
+            if content_type and not content_type.startswith("image/"):
+                logger.warning("OpenAI 图像 URL 返回非图像内容：content-type=%s", _safe_text_for_log(content_type))
+            return base64.b64encode(response.content).decode("utf-8")
+    except Exception as exc:
+        logger.warning("OpenAI 图像 URL 下载失败：%s", _safe_text_for_log(exc))
+        return ""
+
+
+async def _extract_openai_response_images(response: Any) -> List[str]:
     response_images: List[str] = []
-    for item in getattr(response, "data", []) or []:
-        b64_json = getattr(item, "b64_json", None)
-        if not b64_json and isinstance(item, dict):
-            b64_json = item.get("b64_json")
-        if b64_json:
+    seen_values: set[str] = set()
+    pending_urls: list[str] = []
+
+    for item in _iter_openai_image_payloads(response):
+        b64_json = _extract_base64_field(item)
+        if b64_json and not b64_json.startswith(("http://", "https://")) and b64_json not in seen_values:
             response_images.append(str(b64_json))
+            seen_values.add(str(b64_json))
+            continue
+        image_url = _extract_url_field(item)
+        if image_url and image_url not in pending_urls:
+            pending_urls.append(image_url)
+
+    for image_url in pending_urls:
+        fetched_b64 = await _fetch_image_url_as_base64(image_url)
+        if fetched_b64 and fetched_b64 not in seen_values:
+            response_images.append(fetched_b64)
+            seen_values.add(fetched_b64)
+
     return response_images
 
 
@@ -1541,16 +1642,32 @@ def _extract_candidate_id_from_context(error_context: str = "") -> str:
     return match.group(1).strip() if match else ""
 
 
+def _extract_preview_slot_from_context(error_context: str = "") -> str:
+    candidate_id = _extract_candidate_id_from_context(error_context)
+    if candidate_id:
+        return candidate_id
+    task_match = re.search(r"task#([A-Za-z0-9_\-]+)", str(error_context or ""))
+    if task_match:
+        return f"task#{task_match.group(1).strip()}"
+    return ""
+
+
+def _job_type_from_context(error_context: str = "") -> str:
+    return "refine" if str(error_context or "").startswith("refine-image") else "generation"
+
+
 async def _extract_openai_stream_images(
     stream: Any,
     *,
     provider: str = "openai",
     model_name: str = "",
     error_context: str = "",
+    job_type: str = "generation",
+    preview_label_prefix: str = "OpenAI",
 ) -> List[str]:
     final_images: List[str] = []
     partial_images: List[str] = []
-    candidate_id = _extract_candidate_id_from_context(error_context)
+    candidate_id = _extract_preview_slot_from_context(error_context)
     async for event in stream:
         event_type = str(
             getattr(event, "type", "")
@@ -1558,44 +1675,48 @@ async def _extract_openai_stream_images(
             or ""
         )
         image_b64 = _extract_base64_field(event)
+        if image_b64 and image_b64.startswith(("http://", "https://")):
+            image_b64 = await _fetch_image_url_as_base64(image_b64)
+        if not image_b64:
+            image_url = _extract_url_field(event)
+            if image_url:
+                image_b64 = await _fetch_image_url_as_base64(image_url)
         if not image_b64:
             continue
         if "partial" in event_type:
             partial_images.append(image_b64)
-            if candidate_id:
-                _emit_runtime_event(
-                    level="INFO",
-                    kind="preview_ready",
-                    source="GenerationUtils",
-                    job_type="generation",
-                    candidate_id=candidate_id,
-                    stage="OpenAI partial image",
-                    status="running",
-                    provider=provider,
-                    model=model_name,
-                    preview_image=image_b64,
-                    preview_mime_type="image/png",
-                    preview_label=f"OpenAI 流式预览 {len(partial_images)}",
-                    message=f"OpenAI 图像流式预览已更新（candidate={candidate_id}, partial={len(partial_images)}）",
-                )
+            _emit_runtime_event(
+                level="INFO",
+                kind="preview_ready",
+                source="GenerationUtils",
+                job_type=job_type,
+                candidate_id=candidate_id,
+                stage=f"{preview_label_prefix} partial image",
+                status="running",
+                provider=provider,
+                model=model_name,
+                preview_image=image_b64,
+                preview_mime_type="image/png",
+                preview_label=f"{preview_label_prefix} 流式预览 {len(partial_images)}",
+                message=f"{preview_label_prefix} 图像流式预览已更新（slot={candidate_id or 'active'}, partial={len(partial_images)}）",
+            )
         else:
             final_images.append(image_b64)
-            if candidate_id:
-                _emit_runtime_event(
-                    level="INFO",
-                    kind="preview_ready",
-                    source="GenerationUtils",
-                    job_type="generation",
-                    candidate_id=candidate_id,
-                    stage="OpenAI final image",
-                    status="running",
-                    provider=provider,
-                    model=model_name,
-                    preview_image=image_b64,
-                    preview_mime_type="image/png",
-                    preview_label="OpenAI 最终图像",
-                    message=f"OpenAI 图像流式最终图已到达（candidate={candidate_id}）",
-                )
+            _emit_runtime_event(
+                level="INFO",
+                kind="preview_ready",
+                source="GenerationUtils",
+                job_type=job_type,
+                candidate_id=candidate_id,
+                stage=f"{preview_label_prefix} final image",
+                status="running",
+                provider=provider,
+                model=model_name,
+                preview_image=image_b64,
+                preview_mime_type="image/png",
+                preview_label=f"{preview_label_prefix} 最终图像",
+                message=f"{preview_label_prefix} 图像流式最终图已到达（slot={candidate_id or 'active'}）",
+            )
     return final_images or partial_images
 
 
@@ -1648,6 +1769,133 @@ def _is_openai_image_retryable_error(exc: Exception) -> bool:
     if any(token in message for token in ("timeout", "timed out", "connection", "rate limit", "too many requests", "server error", "temporarily unavailable")):
         return True
     return True
+
+
+def _should_try_openai_responses_fallback(
+    exc: Exception,
+    *,
+    provider_type: str,
+    model_name: str,
+    fallback_mode: str,
+) -> bool:
+    if str(fallback_mode or "auto").lower() == "never":
+        return False
+    provider = str(provider_type or "").strip().lower()
+    model = str(model_name or "").strip().lower()
+    if provider not in {"openai", "openai_compatible"}:
+        return False
+    if not (model.startswith("gpt-image") or provider == "openai_compatible"):
+        return False
+    if str(fallback_mode or "").lower() == "always":
+        return True
+    message = str(exc or "").lower()
+    status_code = 0
+    try:
+        status_code = int(getattr(exc, "status_code", 0) or 0)
+    except Exception:
+        status_code = 0
+    if status_code in {401, 403}:
+        return False
+    if any(token in message for token in ("invalid api key", "incorrect api key", "insufficient_quota", "insufficient quota", "credit", "billing")):
+        return False
+    return status_code in {400, 404, 408, 409, 425, 429, 500, 502, 503, 504} or any(
+        token in message
+        for token in (
+            "unsupported parameter",
+            "not supported",
+            "not found",
+            "upstream",
+            "server error",
+            "temporarily unavailable",
+            "timeout",
+        )
+    )
+
+
+def _build_openai_responses_image_tool(
+    *,
+    model_name: str,
+    options: Any,
+    capabilities: Any,
+    edit: bool,
+) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "type": "image_generation",
+        "model": model_name,
+        "action": "edit" if edit else "generate",
+        "size": options.size,
+        "quality": options.quality,
+    }
+    if capabilities.model_family.startswith("gpt-image"):
+        tool["background"] = options.background
+        tool["output_format"] = options.output_format
+        if capabilities.supports_moderation:
+            tool["moderation"] = options.moderation
+    if options.output_compression is not None:
+        tool["output_compression"] = options.output_compression
+    if edit and capabilities.supports_input_fidelity and options.input_fidelity != "auto":
+        tool["input_fidelity"] = options.input_fidelity
+    if options.stream and options.partial_images:
+        tool["partial_images"] = options.partial_images
+    return tool
+
+
+def _build_openai_responses_image_input(
+    *,
+    prompt: str,
+    input_images: list[tuple[bytes, str, str]],
+) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": str(prompt or "")}]
+    for image_bytes, media_type, _filename in input_images:
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        content.append(
+            {
+                "type": "input_image",
+                "image_url": f"data:{media_type};base64,{image_b64}",
+            }
+        )
+    return [{"role": "user", "content": content}]
+
+
+async def _call_openai_responses_image_generation_async(
+    *,
+    client: Any,
+    model_name: str,
+    prompt: str,
+    options: Any,
+    capabilities: Any,
+    input_images: list[tuple[bytes, str, str]],
+    provider_type: str,
+    error_context: str = "",
+) -> List[str]:
+    responses_model = str(options.responses_model or "").strip() or str(os.environ.get("OPENAI_RESPONSES_MODEL", "") or "").strip()
+    if not responses_model:
+        responses_model = "gpt-4.1-mini"
+    tool = _build_openai_responses_image_tool(
+        model_name=model_name,
+        options=options,
+        capabilities=capabilities,
+        edit=bool(input_images),
+    )
+    response_params: dict[str, Any] = {
+        "model": responses_model,
+        "input": _build_openai_responses_image_input(prompt=prompt, input_images=input_images),
+        "tools": [tool],
+        "tool_choice": {"type": "image_generation"},
+    }
+    if options.stream:
+        response_params["stream"] = True
+    response = await client.responses.create(**response_params)
+    if options.stream:
+        return await _extract_openai_stream_images(
+            response,
+            provider=provider_type,
+            model_name=model_name,
+            error_context=error_context,
+            job_type=_job_type_from_context(error_context),
+            preview_label_prefix="OpenAI Responses",
+        )
+    return await _extract_openai_response_images(response)
 
 
 def _extract_openrouter_message_images(message: Any) -> List[str]:
@@ -1904,9 +2152,10 @@ async def call_openai_image_generation_with_retry_async(
                     provider=provider_type,
                     model_name=model_name,
                     error_context=error_context,
+                    job_type=_job_type_from_context(error_context),
                 )
             else:
-                response_images = _extract_openai_response_images(response)
+                response_images = await _extract_openai_response_images(response)
             if response_images:
                 return response_images
             else:
@@ -1930,9 +2179,56 @@ async def call_openai_image_generation_with_retry_async(
                 continue
         except Exception as e:
             last_exception = e
-            last_error_text = str(e)
+            last_error_text = _safe_text_for_log(e)
             context_msg = f" for {error_context}" if error_context else ""
             retryable = _is_openai_image_retryable_error(e)
+            if _should_try_openai_responses_fallback(
+                e,
+                provider_type=provider_type,
+                model_name=model_name,
+                fallback_mode=options.responses_fallback,
+            ):
+                try:
+                    _emit_runtime_event(
+                        level="WARNING",
+                        kind="retry",
+                        source="GenerationUtils",
+                        job_type="generation",
+                        provider="openai",
+                        model=model_name,
+                        attempt=attempt + 1,
+                        status="retrying",
+                        message="OpenAI Images API 失败，改用 Responses 图像工具兜底",
+                        details=f"{context_msg}: {_safe_text_for_log(e)}",
+                    )
+                    response_images = await _call_openai_responses_image_generation_async(
+                        client=client,
+                        model_name=model_name,
+                        prompt=prompt,
+                        options=options,
+                        capabilities=capabilities,
+                        input_images=input_images,
+                        provider_type=provider_type,
+                        error_context=error_context,
+                    )
+                    if response_images:
+                        return response_images
+                    raise RuntimeError("OpenAI Responses 图像工具未返回图像数据")
+                except Exception as fallback_error:
+                    last_exception = fallback_error
+                    last_error_text = (
+                        f"Images API: {_safe_text_for_log(e, max_len=1200)}; "
+                        f"Responses fallback: {_safe_text_for_log(fallback_error, max_len=1200)}"
+                    )
+                    fallback_status_code = 0
+                    try:
+                        fallback_status_code = int(getattr(fallback_error, "status_code", 0) or 0)
+                    except Exception:
+                        fallback_status_code = 0
+                    retryable = retryable or (
+                        fallback_status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+                        and _is_openai_image_retryable_error(fallback_error)
+                    )
             if not retryable:
                 _emit_runtime_event(
                     level="ERROR",

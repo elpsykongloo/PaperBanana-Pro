@@ -4621,6 +4621,7 @@ async def refine_image_with_nanoviz(
                             "aspect_ratio": aspect_ratio,
                             "image_resolution": image_size,
                             "output_format": "png",
+                            "responses_model": getattr(runtime_settings, "model_name", ""),
                             **dict(image_generation_options or {}),
                         }
                         response_list = await asyncio.wait_for(
@@ -5676,6 +5677,25 @@ def render_refine_runtime_panel(snapshot: dict | None, *, requested_images: int)
             f"输入格式：{snapshot.get('input_mime_type')}"
         )
         st.progress(ratio, text=f"总体进度：已完成 {progress_done}/{progress_total} 张精修图")
+
+        preview_events = [
+            event
+            for event in event_history
+            if str(event.get("kind", "") or "") == "preview_ready" and event.get("preview_image")
+        ]
+        if preview_events:
+            st.markdown("**流式图像预览**")
+            latest_preview_events = preview_events[-min(3, len(preview_events)):]
+            preview_cols = st.columns(len(latest_preview_events))
+            for col, event in zip(preview_cols, latest_preview_events):
+                with col:
+                    preview = base64_to_image(str(event.get("preview_image", "") or ""))
+                    if preview is not None:
+                        st.image(
+                            preview,
+                            width="stretch",
+                            caption=str(event.get("preview_label", "") or event.get("stage", "") or "最新预览"),
+                        )
 
         if latest_lines:
             st.markdown("**实时日志**")

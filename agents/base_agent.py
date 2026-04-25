@@ -245,6 +245,7 @@ class BaseAgent(ABC):
                 config={
                     "aspect_ratio": aspect_ratio,
                     "image_resolution": image_resolution,
+                    "responses_model": getattr(self.exp_config, "model_name", ""),
                     **dict(image_generation_options or {}),
                 },
                 contents=_contents,
@@ -261,6 +262,7 @@ class BaseAgent(ABC):
                 config={
                     "aspect_ratio": aspect_ratio,
                     "image_resolution": image_resolution,
+                    "responses_model": getattr(self.exp_config, "model_name", ""),
                     **dict(image_generation_options or {}),
                 },
                 contents=_contents,

@@ -1084,6 +1084,7 @@ async def probe_image(connection: ProviderConnection) -> ProbeResult:
                     aspect_ratio="1:1",
                     image_resolution="1K",
                 ).to_dict()
+                probe_options["responses_model"] = connection.text_model
                 await generation_utils.call_openai_image_generation_with_retry_async(
                     model_name=tested_model,
                     prompt="A simple blue circle icon on white background.",

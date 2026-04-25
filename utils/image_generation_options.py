@@ -38,6 +38,8 @@ class ImageGenerationOptions:
     partial_images: int = 0
     aspect_ratio: str = "1:1"
     image_resolution: str = "2K"
+    responses_fallback: str = "auto"
+    responses_model: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -302,6 +304,10 @@ def normalize_image_generation_options(
     if not capabilities.supports_partial_images:
         partial_images = 0
     partial_images = max(0, min(3, partial_images))
+    responses_fallback = str(raw.get("responses_fallback") or "auto").strip().lower() or "auto"
+    if responses_fallback not in {"auto", "always", "never"}:
+        responses_fallback = "auto"
+    responses_model = str(raw.get("responses_model") or "").strip()
 
     return ImageGenerationOptions(
         size=size,
@@ -315,6 +321,8 @@ def normalize_image_generation_options(
         partial_images=partial_images,
         aspect_ratio=resolved_aspect_ratio,
         image_resolution=resolved_resolution,
+        responses_fallback=responses_fallback,
+        responses_model=responses_model,
     )
 
 

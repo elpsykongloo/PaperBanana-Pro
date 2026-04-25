@@ -56,3 +56,8 @@ only-include = [
     "demo.py",
     "main.py",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
