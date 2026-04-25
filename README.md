@@ -37,6 +37,7 @@ PaperBanana-Pro 在 [原始 PaperBanana](https://github.com/dwzhu-pku/PaperBanan
 | 📊 | **Plot 全链路** | 数据输入解析 → 代码生成 → 本地重渲染 → 精修，统计图端到端闭环 |
 | ⚡ | **`uv` 一键安装** | `uv tool install` 全局可用，免虚拟环境、免 PATH 配置 |
 | 🔌 | **自定义模型供应商** | 支持任意 OpenAI 兼容 API，填入 Base URL 即可接入自有或第三方模型服务 |
+| 🖼️ | **OpenAI GPT Image 2 适配** | 完整支持 OpenAI Images API，含流式预览、Responses API 自动降级、参考图编辑、自定义尺寸等高级特性 |
 
 ---
 
@@ -144,7 +145,12 @@ Copy-Item configs\model_config.template.yaml configs\model_config.yaml
 - `configs/local/google_api_key.txt`
 - `configs/local/evolink_api_key.txt`
 
-当前正式支持 3 个 Provider：**Gemini**、**Openrouter** 和 **Evolink**。
+当前正式支持 4 个 Provider：**Gemini**、**OpenAI**、**Openrouter** 和 **Evolink**。
+
+> [!NOTE]
+> **图像模型推荐优先级**：Banana Pro（Evolink `nano-banana-2-lite`）> GPT Image 2（OpenAI `gpt-image-2`）> Banana 2（Evolink 旧版模型）
+>
+> 根据内部测试，GPT Image 2 的效果不如 Banana Pro。我们推测原因在于：GPT Image 的优势集中在文字稳定性和 zero-shot 生图能力，而 PaperBanana 的本质是尽力稳定文字和风格一致性——二者优势重叠，互补性不足。因此，在 PaperBanana 流水线中，Banana Pro 仍是最优选择，GPT Image 2 次之。
 
 您也可以直接在 GUI 中可视化配置，API Key 会自动存储到本地：
 
@@ -183,7 +189,7 @@ paperbanana run --task_name diagram --exp_mode demo_full --provider gemini
 | --- | --- |
 | `--task_name` | `diagram` 或 `plot` |
 | `--exp_mode` | 流水线模式，如 `demo_full`、`demo_planner_critic` |
-| `--provider` | `gemini` / `evolink` |
+| `--provider` | `gemini` / `openai` / `evolink` / `openrouter` |
 | `--max_critic_rounds` | 最大评审轮数，可设为 `0` |
 | `--retrieval_setting` | 检索模式：`auto`、`curated`、`none` 等 |
 | `--resume` | 自动恢复上次运行 |
@@ -230,6 +236,7 @@ PaperBanana-Pro/
 
 ## 🗺️ 路线图
 
+- [x] OpenAI GPT Image 2 适配（Images API + Responses API 降级 + 流式预览 + 参考图编辑）
 - [ ] 多语言 UI 与提示词支持
 - [ ] 扩展更多会议数据集（ICML、ACL 等），适应不同会议风格
 - [ ] 精修功能扩展：迭代流程引入精修功能
