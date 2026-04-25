@@ -364,6 +364,77 @@ class RefineBackgroundJobTest(unittest.TestCase):
             demo.generation_utils = original_generation_utils
             demo.refine_image_with_nanoviz = original_refine_one
 
+    def test_refine_image_with_nanoviz_routes_openai_to_images_edit(self):
+        original_resolve = demo.resolve_runtime_settings
+        original_generation_utils = demo.generation_utils
+        original_use_runtime_context = original_generation_utils.use_runtime_context
+        original_close_runtime_context = original_generation_utils.close_runtime_context
+        original_call_openai = original_generation_utils.call_openai_image_generation_with_retry_async
+        captured = {}
+
+        class _FakeRuntimeContextManager:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        async def fake_close_runtime_context(ctx):
+            return None
+
+        async def fake_call_openai_image_generation_with_retry_async(**kwargs):
+            captured.update(kwargs)
+            return ["ZmFrZS1pbWFnZQ=="]
+
+        demo.resolve_runtime_settings = lambda *args, **kwargs: types.SimpleNamespace(
+            api_key="local-test-key",
+            provider="openai",
+            connection_id="openai",
+            provider_display_name="OpenAI",
+            image_model_name="gpt-image-2",
+            base_url="https://api.openai.com/v1",
+            extra_headers={},
+        )
+        original_generation_utils.use_runtime_context = lambda ctx: _FakeRuntimeContextManager()
+        original_generation_utils.close_runtime_context = fake_close_runtime_context
+        original_generation_utils.call_openai_image_generation_with_retry_async = fake_call_openai_image_generation_with_retry_async
+
+        try:
+            result = asyncio.run(
+                demo.refine_image_with_nanoviz(
+                    image_bytes=_build_png_bytes(),
+                    edit_prompt="make it sharper",
+                    aspect_ratio="16:9",
+                    image_size="2K",
+                    provider="openai",
+                    image_model_name="gpt-image-2",
+                    input_mime_type="image/png",
+                    runtime_context=object(),
+                    image_generation_options={
+                        "quality": "high",
+                        "size": "2304x1024",
+                        "output_format": "webp",
+                        "output_compression": 75,
+                    },
+                    max_attempts=2,
+                )
+            )
+        finally:
+            demo.resolve_runtime_settings = original_resolve
+            original_generation_utils.use_runtime_context = original_use_runtime_context
+            original_generation_utils.close_runtime_context = original_close_runtime_context
+            original_generation_utils.call_openai_image_generation_with_retry_async = original_call_openai
+
+        self.assertEqual(result[0], b"fake-image")
+        self.assertEqual(captured["model_name"], "gpt-image-2")
+        self.assertEqual(captured["provider_type"], "openai")
+        self.assertEqual(captured["config"]["image_resolution"], "2K")
+        self.assertEqual(captured["config"]["quality"], "high")
+        self.assertEqual(captured["config"]["size"], "2304x1024")
+        self.assertEqual(captured["config"]["output_format"], "webp")
+        self.assertEqual(captured["config"]["output_compression"], 75)
+        self.assertEqual(captured["contents"][1]["source"]["media_type"], "image/png")
+
     def test_refine_job_snapshot_falls_back_to_disk_store(self):
         job_id = "refine_disk_snapshot"
         job = demo.RefineJobState(

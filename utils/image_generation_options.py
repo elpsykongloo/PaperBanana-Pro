@@ -20,6 +20,7 @@ class ImageModelCapabilities:
     supports_stream: bool = False
     supports_partial_images: bool = False
     supports_edit: bool = False
+    supports_custom_size: bool = False
     transparent_supported: bool = False
     legacy_resolution_options: tuple[str, ...] = ("2K", "4K")
 
@@ -48,8 +49,12 @@ GPT_IMAGE_2_SIZES = (
     "1536x1024",
     "1024x1536",
     "2048x2048",
+    "2048x1152",
+    "1152x2048",
     "2560x1440",
     "1440x2560",
+    "3840x2160",
+    "2160x3840",
 )
 GPT_IMAGE_1_SIZES = ("auto", "1024x1024", "1536x1024", "1024x1536")
 DALLE3_SIZES = ("1024x1024", "1792x1024", "1024x1792")
@@ -82,6 +87,16 @@ CAPABILITY_PRESETS: dict[str, ImageModelCapabilities] = {
         output_format_options=("png", "jpeg", "webp"),
         legacy_resolution_options=("1K", "2K", "4K"),
     ),
+    "openai-compatible": ImageModelCapabilities(
+        provider_type="openai_compatible",
+        model_family="openai-compatible",
+        size_options=("auto", "1024x1024", "1536x1024", "1024x1536"),
+        quality_options=("auto", "low", "medium", "high"),
+        background_options=("auto",),
+        output_format_options=("png",),
+        supports_edit=True,
+        legacy_resolution_options=("auto", "1K", "2K"),
+    ),
     "gpt-image-2": ImageModelCapabilities(
         provider_type="openai",
         model_family="gpt-image-2",
@@ -91,10 +106,11 @@ CAPABILITY_PRESETS: dict[str, ImageModelCapabilities] = {
         output_format_options=("png", "jpeg", "webp"),
         supports_output_compression=True,
         supports_moderation=True,
-        supports_input_fidelity=True,
+        supports_input_fidelity=False,
         supports_stream=True,
         supports_partial_images=True,
         supports_edit=True,
+        supports_custom_size=True,
         transparent_supported=False,
         legacy_resolution_options=("auto", "1K", "2K", "4K"),
     ),
@@ -137,16 +153,16 @@ CAPABILITY_PRESETS: dict[str, ImageModelCapabilities] = {
 
 
 ASPECT_RATIO_SIZE_MAP = {
-    "1:1": {"1K": "1024x1024", "2K": "2048x2048", "4K": "2048x2048"},
-    "16:9": {"1K": "1536x1024", "2K": "2560x1440", "4K": "2560x1440"},
-    "21:9": {"1K": "1536x1024", "2K": "2560x1440", "4K": "2560x1440"},
-    "3:2": {"1K": "1536x1024", "2K": "1536x1024", "4K": "2560x1440"},
-    "4:3": {"1K": "1536x1024", "2K": "1536x1024", "4K": "2560x1440"},
-    "2:3": {"1K": "1024x1536", "2K": "1024x1536", "4K": "1440x2560"},
-    "3:4": {"1K": "1024x1536", "2K": "1024x1536", "4K": "1440x2560"},
-    "9:16": {"1K": "1024x1536", "2K": "1440x2560", "4K": "1440x2560"},
-    "4:5": {"1K": "1024x1536", "2K": "1024x1536", "4K": "1440x2560"},
-    "5:4": {"1K": "1536x1024", "2K": "1536x1024", "4K": "2560x1440"},
+    "1:1": {"1K": "1024x1024", "2K": "2048x2048", "4K": "2880x2880"},
+    "16:9": {"1K": "1536x1024", "2K": "2048x1152", "4K": "3840x2160"},
+    "21:9": {"1K": "1536x736", "2K": "2304x1024", "4K": "3072x1344"},
+    "3:2": {"1K": "1536x1024", "2K": "1920x1280", "4K": "3072x2048"},
+    "4:3": {"1K": "1536x1152", "2K": "1792x1344", "4K": "3072x2304"},
+    "2:3": {"1K": "1024x1536", "2K": "1280x1920", "4K": "2048x3072"},
+    "3:4": {"1K": "1152x1536", "2K": "1344x1792", "4K": "2304x3072"},
+    "9:16": {"1K": "1024x1536", "2K": "1152x2048", "4K": "2160x3840"},
+    "4:5": {"1K": "1024x1280", "2K": "1280x1600", "4K": "2304x2880"},
+    "5:4": {"1K": "1280x1024", "2K": "1600x1280", "4K": "2880x2304"},
 }
 
 
@@ -156,6 +172,44 @@ def _first_supported(preferred: str, options: tuple[str, ...], fallback: str = "
     if fallback and fallback in options:
         return fallback
     return options[0] if options else preferred
+
+
+def _is_valid_gpt_image_2_size(value: str) -> bool:
+    normalized = str(value or "").strip().lower()
+    if normalized == "auto":
+        return True
+    if "x" not in normalized:
+        return False
+    try:
+        width_text, height_text = normalized.split("x", 1)
+        width = int(width_text)
+        height = int(height_text)
+    except ValueError:
+        return False
+    if width <= 0 or height <= 0:
+        return False
+    if width > 3840 or height > 3840:
+        return False
+    if width % 16 != 0 or height % 16 != 0:
+        return False
+    long_edge = max(width, height)
+    short_edge = min(width, height)
+    if long_edge / short_edge > 3:
+        return False
+    total_pixels = width * height
+    return 655_360 <= total_pixels <= 8_294_400
+
+
+def is_valid_custom_image_size(value: str, capabilities: ImageModelCapabilities) -> bool:
+    """校验当前模型是否接受自定义像素尺寸。"""
+    return bool(capabilities.supports_custom_size and _is_valid_gpt_image_2_size(value))
+
+
+def _normalize_size(preferred: str, capabilities: ImageModelCapabilities, fallback: str = "auto") -> str:
+    normalized = str(preferred or "").strip()
+    if capabilities.supports_custom_size and _is_valid_gpt_image_2_size(normalized):
+        return normalized.lower() if normalized.lower() == "auto" else normalized
+    return _first_supported(normalized, capabilities.size_options, fallback)
 
 
 def get_image_model_capabilities(provider_type: str, model_name: str = "") -> ImageModelCapabilities:
@@ -171,8 +225,10 @@ def get_image_model_capabilities(provider_type: str, model_name: str = "") -> Im
         return CAPABILITY_PRESETS["dall-e-3"]
     if model.startswith("dall-e-2"):
         return CAPABILITY_PRESETS["dall-e-2"]
-    if provider in {"openai", "openai_compatible"}:
+    if provider == "openai":
         return CAPABILITY_PRESETS["gpt-image-2"]
+    if provider == "openai_compatible":
+        return CAPABILITY_PRESETS["openai-compatible"]
     return CAPABILITY_PRESETS["evolink"]
 
 
@@ -185,7 +241,9 @@ def resolve_legacy_size(aspect_ratio: str, image_resolution: str, capabilities: 
             str(aspect_ratio or "").strip(),
             ASPECT_RATIO_SIZE_MAP["1:1"],
         ).get(resolution.upper(), "")
-        if mapped in capabilities.size_options:
+        if mapped in capabilities.size_options or (
+            capabilities.supports_custom_size and _is_valid_gpt_image_2_size(mapped)
+        ):
             return mapped
     return _first_supported("auto", capabilities.size_options, "1024x1024")
 
@@ -206,7 +264,7 @@ def normalize_image_generation_options(
     size = str(raw.get("size") or raw.get("image_size") or "").strip()
     if not size:
         size = resolve_legacy_size(resolved_aspect_ratio, resolved_resolution, capabilities)
-    size = _first_supported(size, capabilities.size_options, "auto")
+    size = _normalize_size(size, capabilities, "auto")
 
     default_quality = "auto" if "auto" in capabilities.quality_options else capabilities.quality_options[0]
     quality = _first_supported(str(raw.get("quality") or default_quality).strip(), capabilities.quality_options, default_quality)
@@ -237,7 +295,10 @@ def normalize_image_generation_options(
         input_fidelity = "auto"
 
     stream = bool(raw.get("stream", False)) and capabilities.supports_stream
-    partial_images = int(raw.get("partial_images", 0) or 0)
+    try:
+        partial_images = int(raw.get("partial_images", 0) or 0)
+    except (TypeError, ValueError):
+        partial_images = 0
     if not capabilities.supports_partial_images:
         partial_images = 0
     partial_images = max(0, min(3, partial_images))
@@ -274,9 +335,10 @@ def build_openai_image_request_params(
             payload["moderation"] = options.moderation
     if options.output_compression is not None:
         payload["output_compression"] = options.output_compression
-    if edit and options.input_fidelity != "auto":
+    if edit and capabilities.supports_input_fidelity and options.input_fidelity != "auto":
         payload["input_fidelity"] = options.input_fidelity
     if options.stream:
         payload["stream"] = True
-        payload["partial_images"] = options.partial_images
+        if options.partial_images:
+            payload["partial_images"] = options.partial_images
     return payload

@@ -1261,9 +1261,15 @@ def _convert_to_openai_format(contents):
             openai_contents.append({"type": "text", "text": item["text"]})
         elif item.get("type") == "image":
             source = item.get("source", {})
+            data = ""
+            media_type = "image/jpeg"
             if source.get("type") == "base64":
                 media_type = source.get("media_type", "image/jpeg")
                 data = source.get("data", "")
+            elif item.get("image_base64"):
+                media_type = item.get("mime_type", "image/jpeg")
+                data = item.get("image_base64", "")
+            if data:
                 data_url = f"data:{media_type};base64,{data}"
                 openai_contents.append({
                     "type": "image_url",
@@ -1479,12 +1485,16 @@ def _extract_openai_input_images(contents: Optional[List[Dict[str, Any]]] = None
         if item.get("type") != "image":
             continue
         source = item.get("source", {}) or {}
-        if source.get("type") != "base64":
-            continue
-        data = str(source.get("data", "") or "")
+        data = ""
+        media_type = "image/png"
+        if source.get("type") == "base64":
+            data = str(source.get("data", "") or "")
+            media_type = str(source.get("media_type", "image/png") or "image/png")
+        elif item.get("image_base64"):
+            data = str(item.get("image_base64", "") or "")
+            media_type = str(item.get("mime_type", "image/png") or "image/png")
         if not data:
             continue
-        media_type = str(source.get("media_type", "image/png") or "image/png")
         suffix = media_type.split("/", 1)[-1].split(";", 1)[0] or "png"
         try:
             images.append((base64.b64decode(data), media_type, f"reference_{index}.{suffix}"))
@@ -1502,6 +1512,142 @@ def _extract_openai_response_images(response: Any) -> List[str]:
         if b64_json:
             response_images.append(str(b64_json))
     return response_images
+
+
+def _extract_base64_field(payload: Any) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return _extract_base64_from_data_url(payload)
+    if isinstance(payload, dict):
+        for key in ("b64_json", "result", "image_base64", "partial_image_b64", "partial_image"):
+            value = payload.get(key)
+            extracted = _extract_base64_field(value)
+            if extracted:
+                return extracted
+        return ""
+    for key in ("b64_json", "result", "image_base64", "partial_image_b64", "partial_image"):
+        value = getattr(payload, key, None)
+        extracted = _extract_base64_field(value)
+        if extracted:
+            return extracted
+    if hasattr(payload, "model_extra"):
+        return _extract_base64_field(getattr(payload, "model_extra", None) or {})
+    return ""
+
+
+def _extract_candidate_id_from_context(error_context: str = "") -> str:
+    match = re.search(r"candidate=([^,\]\)]+)", str(error_context or ""))
+    return match.group(1).strip() if match else ""
+
+
+async def _extract_openai_stream_images(
+    stream: Any,
+    *,
+    provider: str = "openai",
+    model_name: str = "",
+    error_context: str = "",
+) -> List[str]:
+    final_images: List[str] = []
+    partial_images: List[str] = []
+    candidate_id = _extract_candidate_id_from_context(error_context)
+    async for event in stream:
+        event_type = str(
+            getattr(event, "type", "")
+            or (event.get("type", "") if isinstance(event, dict) else "")
+            or ""
+        )
+        image_b64 = _extract_base64_field(event)
+        if not image_b64:
+            continue
+        if "partial" in event_type:
+            partial_images.append(image_b64)
+            if candidate_id:
+                _emit_runtime_event(
+                    level="INFO",
+                    kind="preview_ready",
+                    source="GenerationUtils",
+                    job_type="generation",
+                    candidate_id=candidate_id,
+                    stage="OpenAI partial image",
+                    status="running",
+                    provider=provider,
+                    model=model_name,
+                    preview_image=image_b64,
+                    preview_mime_type="image/png",
+                    preview_label=f"OpenAI 流式预览 {len(partial_images)}",
+                    message=f"OpenAI 图像流式预览已更新（candidate={candidate_id}, partial={len(partial_images)}）",
+                )
+        else:
+            final_images.append(image_b64)
+            if candidate_id:
+                _emit_runtime_event(
+                    level="INFO",
+                    kind="preview_ready",
+                    source="GenerationUtils",
+                    job_type="generation",
+                    candidate_id=candidate_id,
+                    stage="OpenAI final image",
+                    status="running",
+                    provider=provider,
+                    model=model_name,
+                    preview_image=image_b64,
+                    preview_mime_type="image/png",
+                    preview_label="OpenAI 最终图像",
+                    message=f"OpenAI 图像流式最终图已到达（candidate={candidate_id}）",
+                )
+    return final_images or partial_images
+
+
+def _is_openai_image_retryable_error(exc: Exception) -> bool:
+    try:
+        from openai import (
+            APIConnectionError,
+            APIStatusError,
+            APITimeoutError,
+            AuthenticationError,
+            BadRequestError,
+            NotFoundError,
+            PermissionDeniedError,
+            RateLimitError,
+        )
+    except Exception:  # pragma: no cover
+        APIConnectionError = APIStatusError = APITimeoutError = AuthenticationError = BadRequestError = NotFoundError = PermissionDeniedError = RateLimitError = tuple()  # type: ignore
+
+    message = str(exc or "").lower()
+    if AuthenticationError and isinstance(exc, AuthenticationError):
+        return False
+    if BadRequestError and isinstance(exc, BadRequestError):
+        return False
+    if NotFoundError and isinstance(exc, NotFoundError):
+        return False
+    if PermissionDeniedError and isinstance(exc, PermissionDeniedError):
+        return False
+    if APITimeoutError and isinstance(exc, APITimeoutError):
+        return True
+    if APIConnectionError and isinstance(exc, APIConnectionError):
+        return True
+    if RateLimitError and isinstance(exc, RateLimitError):
+        if any(token in message for token in ("insufficient_quota", "insufficient quota", "credit", "billing")):
+            return False
+        return True
+    status_code = 0
+    if APIStatusError and isinstance(exc, APIStatusError):
+        status_code = int(getattr(exc, "status_code", 0) or 0)
+    elif hasattr(exc, "status_code"):
+        try:
+            status_code = int(getattr(exc, "status_code", 0) or 0)
+        except Exception:
+            status_code = 0
+    if status_code in {400, 401, 403, 404}:
+        return False
+    if status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+        return True
+    if any(token in message for token in ("invalid_request", "model_not_found", "not found", "unsupported parameter")):
+        return False
+    if any(token in message for token in ("timeout", "timed out", "connection", "rate limit", "too many requests", "server error", "temporarily unavailable")):
+        return True
+    return True
 
 
 def _extract_openrouter_message_images(message: Any) -> List[str]:
@@ -1739,15 +1885,28 @@ async def call_openai_image_generation_with_retry_async(
             for image_bytes, media_type, filename in input_images
         ]
 
+    safe_max_attempts = max(1, int(max_attempts or 1))
     last_exception: Exception | None = None
     last_error_text = ""
-    for attempt in range(max_attempts):
+    attempts_used = 0
+    for attempt in range(safe_max_attempts):
+        attempts_used = attempt + 1
+        if _runtime_cancel_requested():
+            raise asyncio.CancelledError()
         try:
             if is_edit_request:
                 response = await client.images.edit(**gen_params)
             else:
                 response = await client.images.generate(**gen_params)
-            response_images = _extract_openai_response_images(response)
+            if request_params.get("stream"):
+                response_images = await _extract_openai_stream_images(
+                    response,
+                    provider=provider_type,
+                    model_name=model_name,
+                    error_context=error_context,
+                )
+            else:
+                response_images = _extract_openai_response_images(response)
             if response_images:
                 return response_images
             else:
@@ -1764,13 +1923,31 @@ async def call_openai_image_generation_with_retry_async(
                     message="OpenAI 图像生成未返回数据，将继续重试",
                 )
                 logger.warning("OpenAI 图像生成失败，未返回数据")
-                if attempt < max_attempts - 1:
+                if attempt < safe_max_attempts - 1:
+                    if _runtime_cancel_requested():
+                        raise asyncio.CancelledError()
                     await asyncio.sleep(retry_delay)
                 continue
         except Exception as e:
             last_exception = e
             last_error_text = str(e)
             context_msg = f" for {error_context}" if error_context else ""
+            retryable = _is_openai_image_retryable_error(e)
+            if not retryable:
+                _emit_runtime_event(
+                    level="ERROR",
+                    kind="error",
+                    source="GenerationUtils",
+                    job_type="generation",
+                    provider="openai",
+                    model=model_name,
+                    attempt=attempt + 1,
+                    status="failed",
+                    message="OpenAI 图像生成遇到不可恢复错误，停止重试",
+                    details=f"{context_msg}: {e}",
+                )
+                logger.error("OpenAI 图像生成遇到不可恢复错误%s: %s", context_msg, e)
+                break
             _emit_runtime_event(
                 level="WARNING",
                 kind="retry",
@@ -1780,19 +1957,21 @@ async def call_openai_image_generation_with_retry_async(
                 model=model_name,
                 attempt=attempt + 1,
                 status="retrying",
-                message=f"OpenAI 图像生成第 {attempt + 1}/{max_attempts} 次尝试失败，{retry_delay}s 后重试",
+                message=f"OpenAI 图像生成第 {attempt + 1}/{safe_max_attempts} 次尝试失败，将继续使用同一模型，{retry_delay}s 后重试",
                 details=f"{context_msg}: {e}",
             )
             logger.warning(
-                "OpenAI 图像生成第 %s 次尝试失败%s，%ss 后重试",
+                "OpenAI 图像生成第 %s 次尝试失败%s，将继续使用同一模型，%ss 后重试",
                 attempt + 1,
                 context_msg,
                 retry_delay,
             )
-            if attempt < max_attempts - 1:
+            if attempt < safe_max_attempts - 1:
+                if _runtime_cancel_requested():
+                    raise asyncio.CancelledError()
                 await asyncio.sleep(retry_delay)
     context_msg = f" for {error_context}" if error_context else ""
-    failure_message = f"OpenAI 图像生成在 {max_attempts} 次尝试后仍然失败{context_msg}"
+    failure_message = f"OpenAI 图像生成在 {attempts_used or safe_max_attempts} 次同模型尝试后仍然失败{context_msg}"
     if last_error_text:
         failure_message = f"{failure_message}: {last_error_text}"
     _emit_runtime_event(
@@ -1803,8 +1982,8 @@ async def call_openai_image_generation_with_retry_async(
         provider="openai",
         model=model_name,
         status="failed",
-        message=f"OpenAI 图像生成在 {max_attempts} 次尝试后仍然失败",
+        message=f"OpenAI 图像生成在 {attempts_used or safe_max_attempts} 次同模型尝试后仍然失败",
         details=failure_message,
     )
-    logger.error("OpenAI 图像生成全部 %s 次尝试失败%s", max_attempts, context_msg)
+    logger.error("OpenAI 图像生成全部 %s 次同模型尝试失败%s", attempts_used or safe_max_attempts, context_msg)
     raise RuntimeError(failure_message) from last_exception

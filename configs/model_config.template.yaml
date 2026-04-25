@@ -41,3 +41,10 @@ openrouter:
   base_url: "https://openrouter.ai/api/v1"
   model_name: "google/gemini-3.1-flash-lite-preview"  # format: provider/model-name
   image_model_name: "google/gemini-3.1-flash-image-preview"
+
+# OpenAI Provider configuration
+openai:
+  api_key: "" # optional if using configs/local/openai_api_key.txt
+  base_url: "https://api.openai.com/v1"
+  model_name: "gpt-5.4-mini"
+  image_model_name: "gpt-image-2"

@@ -190,6 +190,8 @@ async def main():
     parser.add_argument("--image_output_format", type=str, default="", help="image output format")
     parser.add_argument("--image_output_compression", type=int, default=-1, help="jpeg/webp compression 0-100")
     parser.add_argument("--image_moderation", type=str, default="", help="image moderation: auto or low")
+    parser.add_argument("--image_stream", action="store_true", help="enable OpenAI image streaming events")
+    parser.add_argument("--image_partial_images", type=int, default=0, help="OpenAI streamed partial images, 0-3")
     parser.add_argument(
         "--concurrency_mode",
         type=str,
@@ -260,23 +262,30 @@ async def main():
     )
     with open(input_filename, "r", encoding="utf-8") as f:
         data_list = json.load(f)
-    image_generation_options = normalize_image_generation_options(
-        provider_type=exp_config.provider,
-        model_name=exp_config.image_model_name,
-        raw_options={
-            "size": args.image_size,
-            "quality": args.image_quality,
-            "background": args.image_background,
-            "output_format": args.image_output_format,
-            "output_compression": None if args.image_output_compression < 0 else args.image_output_compression,
-            "moderation": args.image_moderation,
-        },
-    ).to_dict()
+    cli_image_option_overrides = {
+        "size": args.image_size,
+        "quality": args.image_quality,
+        "background": args.image_background,
+        "output_format": args.image_output_format,
+        "output_compression": None if args.image_output_compression < 0 else args.image_output_compression,
+        "moderation": args.image_moderation,
+        "stream": bool(args.image_stream),
+        "partial_images": args.image_partial_images,
+    }
     for item in data_list:
         if not isinstance(item, dict):
             continue
         additional_info = item.setdefault("additional_info", {})
         if isinstance(additional_info, dict):
+            aspect_ratio = str(additional_info.get("rounded_ratio", "1:1") or "1:1")
+            image_resolution = str(additional_info.get("image_resolution", "2K") or "2K")
+            image_generation_options = normalize_image_generation_options(
+                provider_type=exp_config.provider,
+                model_name=exp_config.image_model_name,
+                aspect_ratio=aspect_ratio,
+                image_resolution=image_resolution,
+                raw_options=cli_image_option_overrides,
+            ).to_dict()
             additional_info.setdefault("image_generation_options", image_generation_options)
 
     resume_source_path, resume_checkpoint = resolve_resume_source_path(
