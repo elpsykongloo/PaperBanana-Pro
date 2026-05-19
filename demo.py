@@ -128,6 +128,7 @@ try:
         delete_provider_api_key,
         load_model_config,
         write_provider_api_key,
+        write_provider_base_url,
     )
     from utils.dataset_paths import DEFAULT_DATASET_NAME, get_reference_file_path
     from utils.demo_job_store import (
@@ -1223,6 +1224,23 @@ def persist_provider_api_key_input(provider: str, api_key: str) -> None:
         write_custom_provider_api_key(normalized_provider, normalized_value, base_dir=REPO_ROOT)
 
 
+def persist_provider_base_url_input(provider: str, base_url: str) -> None:
+    global model_config_data
+
+    normalized_value = str(base_url or "").strip()
+    if not normalized_value:
+        return
+    normalized_provider = normalize_connection_id(provider, default=str(provider or ""))
+    if normalized_provider not in BUILTIN_CONNECTION_IDS:
+        return
+    write_provider_base_url(normalized_provider, normalized_value, base_dir=REPO_ROOT)
+    model_config_data = load_model_config(REPO_ROOT)
+
+
+def persist_provider_base_url_widget_value(provider: str, state_key: str) -> None:
+    persist_provider_base_url_input(provider, str(st.session_state.get(state_key, "") or ""))
+
+
 def request_clear_provider_api_key(
     *,
     provider: str,
@@ -1569,6 +1587,29 @@ def render_provider_api_key_controls(
     return normalized_api_key
 
 
+def _is_safe_model_label_for_display(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text or len(text) > 180:
+        return False
+    lowered = text.lower()
+    if any(marker in lowered[:600] for marker in ("<!doctype", "<html", "<head", "<script")):
+        return False
+    if any(char in text for char in "<>{}\\\r\n\t"):
+        return False
+    return True
+
+
+def _sanitize_discovered_models_for_display(values: Any) -> list[str]:
+    models: list[str] = []
+    for item in list(values or []):
+        model_name = str(item or "").strip()
+        if not _is_safe_model_label_for_display(model_name):
+            continue
+        if model_name not in models:
+            models.append(model_name)
+    return models
+
+
 def render_connection_probe_results(prefix: str) -> None:
     state_keys = _build_connection_state_keys(prefix)
     probe_results = dict(st.session_state.get(state_keys["probe_results"], {}) or {})
@@ -1596,7 +1637,9 @@ def render_connection_probe_results(prefix: str) -> None:
             tested_model = str(payload.get("tested_model", "") or "").strip()
             raw_excerpt = str(payload.get("raw_excerpt", "") or "").strip()
             latency_ms = int(payload.get("latency_ms", 0) or 0)
-            discovered_models = list(payload.get("discovered_models", []) or [])
+            discovered_models = _sanitize_discovered_models_for_display(
+                payload.get("discovered_models", []) or []
+            )
             http_status = int(payload.get("http_status", 0) or 0)
             timestamp = str(payload.get("timestamp", "") or "").strip()
             meta_parts = []
@@ -1605,7 +1648,12 @@ def render_connection_probe_results(prefix: str) -> None:
             if discovered_models:
                 preview = ", ".join(discovered_models[:2])
                 suffix = f" 等 {len(discovered_models)} 个" if len(discovered_models) > 2 else ""
-                meta_parts.append(f"发现 {preview}{suffix}")
+                model_list_label = "手动模型" if (
+                    target == "discovery"
+                    and status == "warning"
+                    and "手动模型" in message
+                ) else "发现"
+                meta_parts.append(f"{model_list_label} {preview}{suffix}")
             if latency_ms > 0:
                 meta_parts.append(f"{latency_ms} ms")
             if error_type:
@@ -1632,7 +1680,12 @@ def render_connection_probe_results(prefix: str) -> None:
                     if raw_excerpt:
                         st.code(raw_excerpt, language="text")
                     if discovered_models:
-                        st.caption(f"完整模型列表：{', '.join(discovered_models)}")
+                        detail_label = "手动模型列表" if (
+                            target == "discovery"
+                            and status == "warning"
+                            and "手动模型" in message
+                        ) else "完整模型列表"
+                        st.caption(f"{detail_label}：{', '.join(discovered_models)}")
                     detail_parts = []
                     if http_status:
                         detail_parts.append(f"HTTP {http_status}")
@@ -1696,6 +1749,8 @@ def save_connection_draft(
     model_name: str,
     image_model_name: str,
 ) -> tuple[bool, str, dict[str, Any]]:
+    global model_config_data
+
     state_keys = _build_connection_state_keys(prefix)
     try:
         extra_headers = parse_extra_headers_json(
@@ -1706,10 +1761,14 @@ def save_connection_draft(
 
     if selected_connection_id in BUILTIN_CONNECTION_IDS:
         normalized_api_key = str(api_key or "").strip()
+        normalized_base_url = str(st.session_state.get(state_keys["base_url"], "") or "").strip()
         if bool(st.session_state.get(state_keys["persist_secret"], True)):
             write_provider_api_key(selected_connection_id, normalized_api_key, base_dir=REPO_ROOT)
         else:
             delete_provider_api_key(selected_connection_id, base_dir=REPO_ROOT)
+        if normalized_base_url:
+            write_provider_base_url(selected_connection_id, normalized_base_url, base_dir=REPO_ROOT)
+        model_config_data = load_model_config(REPO_ROOT)
         defaults = _apply_connection_defaults_to_session(
             prefix,
             selected_connection_id,
@@ -6587,7 +6646,9 @@ def render_generation_sidebar_controls() -> dict:
                 base_url = st.text_input(
                     "Base URL",
                     key=state_keys["base_url"],
-                    help="OpenAI 兼容服务请填写完整 base URL；内置连接也可临时覆盖。",
+                    on_change=persist_provider_base_url_widget_value,
+                    args=(runtime_connection_id, state_keys["base_url"]),
+                    help="OpenAI 兼容服务请填写完整 base URL；内置连接会保存为本地默认值。",
                 )
                 extra_headers_json = st.text_area(
                     "额外请求头（JSON）",
@@ -6901,6 +6962,8 @@ def render_refine_sidebar_controls() -> dict:
                 refine_base_url = st.text_input(
                     "Base URL",
                     key=state_keys["base_url"],
+                    on_change=persist_provider_base_url_widget_value,
+                    args=(runtime_connection_id, state_keys["base_url"]),
                     help="当前精修连接的 base URL。",
                 )
                 refine_extra_headers_json = st.text_area(

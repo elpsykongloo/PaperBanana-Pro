@@ -61,7 +61,7 @@ PROVIDER_CONFIG_MAP = {
         "api_section": "openai",
         "api_key": "api_key",
         "api_env": "OPENAI_API_KEY",
-        "default_model_name": "gpt-5.4-mini",
+        "default_model_name": "gpt-5.5",
         "default_image_model_name": "gpt-image-2",
         "base_url_section": "openai",
         "base_url_key": "base_url",
@@ -264,6 +264,33 @@ def write_provider_api_key(
         api_key,
         base_dir=base_dir,
     )
+
+
+def write_provider_base_url(
+    provider: str,
+    base_url: str,
+    base_dir: Path | None = None,
+) -> Path | None:
+    provider_config = _get_provider_config(provider)
+    section = provider_config["base_url_section"]
+    key = provider_config["base_url_key"]
+    if not section or not key:
+        return None
+
+    config_path = get_config_dir(base_dir) / "model_config.yaml"
+    model_config = load_model_config(base_dir)
+    section_config = model_config.get(section, {})
+    if not isinstance(section_config, dict):
+        section_config = {}
+
+    normalized_value = str(base_url or "").strip() or provider_config["default_base_url"]
+    section_config[key] = normalized_value
+    model_config[section] = section_config
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(model_config, f, allow_unicode=True, sort_keys=False)
+    return config_path
 
 
 def delete_provider_api_key(
