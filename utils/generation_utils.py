@@ -368,6 +368,25 @@ def _safe_log(message: Any) -> None:
         pass
 
 
+def _looks_like_html_response(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    head = text[:1200]
+    return any(marker in head for marker in ("<!doctype", "<html", "<head", "<body", "<script"))
+
+
+def _raise_if_openai_text_response_is_html(text: str, *, source: str) -> None:
+    if not _looks_like_html_response(text):
+        return
+    raise RuntimeError(
+        f"{source}返回了 HTML 页面，而不是 OpenAI 兼容 JSON/文本响应。"
+        "这通常表示 Base URL 指到了网关首页或缺少 /v1 API 路径，"
+        "请检查该连接的 Base URL 是否能正确访问 /chat/completions。"
+        f"响应片段：{_safe_text_for_log(text, max_len=800)}"
+    )
+
+
 def _emit_runtime_event(
     *,
     level: str = "INFO",
@@ -1294,6 +1313,162 @@ def _convert_to_openai_format(contents):
     return openai_contents
 
 
+def _payload_value(payload: Any, key: str) -> Any:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        return payload.get(key)
+    value = getattr(payload, key, None)
+    if value is not None:
+        return value
+    model_extra = getattr(payload, "model_extra", None)
+    if isinstance(model_extra, dict):
+        return model_extra.get(key)
+    return None
+
+
+def _extract_text_from_openai_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        texts = [
+            _extract_text_from_openai_content(item)
+            for item in content
+        ]
+        return "\n".join(text for text in texts if text).strip()
+    if isinstance(content, dict):
+        for key in ("text", "content", "output_text", "value"):
+            text = _extract_text_from_openai_content(content.get(key))
+            if text:
+                return text
+        message_text = _extract_text_from_openai_content(content.get("message"))
+        if message_text:
+            return message_text
+        return ""
+    for key in ("text", "content", "output_text", "value"):
+        text = _extract_text_from_openai_content(_payload_value(content, key))
+        if text:
+            return text
+    return ""
+
+
+def _extract_openai_chat_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response.strip()
+
+    choices = _payload_value(response, "choices")
+    if choices:
+        for choice in list(choices or []):
+            message = _payload_value(choice, "message")
+            text = _extract_text_from_openai_content(_payload_value(message, "content"))
+            if text:
+                return text
+            text = _extract_text_from_openai_content(_payload_value(choice, "text"))
+            if text:
+                return text
+            delta = _payload_value(choice, "delta")
+            text = _extract_text_from_openai_content(_payload_value(delta, "content"))
+            if text:
+                return text
+
+    for key in ("output_text", "content", "text", "response", "result", "message"):
+        text = _extract_text_from_openai_content(_payload_value(response, key))
+        if text:
+            return text
+    return ""
+
+
+def _openai_compatible_endpoint(base_url: str, path: str) -> str:
+    normalized_base = str(base_url or "https://api.openai.com/v1").strip().rstrip("/")
+    normalized_path = str(path or "").strip().lstrip("/")
+    return f"{normalized_base}/{normalized_path}"
+
+
+def _get_openai_request_context_for_client(client: Any) -> RuntimeContext | None:
+    active_context = _active_runtime_context.get()
+    if active_context is not None and active_context.openai_client is client:
+        return active_context
+    if _default_runtime_context is not None and _default_runtime_context.openai_client is client:
+        return _default_runtime_context
+    return None
+
+
+def _should_try_openai_compatible_raw_fallback(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    message = str(exc or "").lower()
+    return any(
+        marker in name or marker in message
+        for marker in (
+            "validation",
+            "pydantic",
+            "_set_private_attributes",
+            "object has no attribute 'choices'",
+            'object has no attribute "choices"',
+            "failed to deserialize",
+            "invalid response object",
+        )
+    )
+
+
+async def _call_openai_chat_completions_raw_async(
+    *,
+    client: Any,
+    model_name: str,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    max_completion_tokens: int,
+) -> str:
+    context = _get_openai_request_context_for_client(client)
+    if context is None:
+        raise RuntimeError("OpenAI 兼容文本接口缺少可复用的运行时上下文。")
+    if not str(context.api_key or "").strip():
+        raise RuntimeError("OpenAI 兼容文本接口缺少 API Key。")
+
+    try:
+        import httpx
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("未安装 httpx，无法执行 OpenAI 兼容原始 HTTP 兜底。") from exc
+
+    headers = {
+        "Authorization": f"Bearer {context.api_key}",
+        "Content-Type": "application/json",
+    }
+    headers.update(dict(context.extra_headers or {}))
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": temperature,
+        "max_completion_tokens": max_completion_tokens,
+    }
+    url = _openai_compatible_endpoint(context.base_url, "chat/completions")
+
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as raw_client:
+        response = await raw_client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        content_type = str(response.headers.get("content-type", "") or "").lower()
+        if "text/html" in content_type:
+            raise RuntimeError(
+                "OpenAI 兼容文本接口返回了 HTML 页面，而不是 JSON。"
+                "请检查 Base URL 是否指向正确的 API 入口（通常是 /v1）。"
+                f"响应片段：{_safe_text_for_log(response.text, max_len=800)}"
+            )
+        try:
+            raw_payload: Any = response.json()
+        except ValueError:
+            raw_payload = response.text
+
+    text = _extract_openai_chat_text(raw_payload)
+    if text:
+        _raise_if_openai_text_response_is_html(text, source="OpenAI 兼容文本接口")
+        return text
+    raise RuntimeError(
+        "OpenAI 兼容文本接口返回了无法解析的响应："
+        f"{_safe_text_for_log(raw_payload, max_len=1200)}"
+    )
+
+
 async def call_claude_with_retry_async(
     model_name, contents, config, max_attempts=5, retry_delay=30, error_context=""
 ):
@@ -1401,23 +1576,57 @@ async def call_openai_with_retry_async(
     last_exception: Exception | None = None
     last_error_text = ""
     for attempt in range(max_attempts):
+        messages = []
         try:
             openai_contents = _convert_to_openai_format(current_contents)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": openai_contents}
+            ]
             first_response = await client.chat.completions.create(
                 model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": openai_contents}
-                ],
+                messages=messages,
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
             )
-            response_text_list.append(first_response.choices[0].message.content)
+            response_text = _extract_openai_chat_text(first_response)
+            if not response_text:
+                raise RuntimeError(
+                    "OpenAI 文本响应中未找到可用文本："
+                    f"{_safe_text_for_log(first_response, max_len=1200)}"
+                )
+            _raise_if_openai_text_response_is_html(
+                response_text,
+                source="OpenAI SDK 文本接口",
+            )
+            response_text_list.append(response_text)
             is_input_valid = True
             break
         except Exception as e:
             last_exception = e
-            last_error_text = str(e)
+            last_error_text = _safe_text_for_log(e)
+            if _should_try_openai_compatible_raw_fallback(e):
+                try:
+                    fallback_text = await _call_openai_chat_completions_raw_async(
+                        client=client,
+                        model_name=model_name,
+                        messages=messages,
+                        temperature=temperature,
+                        max_completion_tokens=max_completion_tokens,
+                    )
+                    _raise_if_openai_text_response_is_html(
+                        fallback_text,
+                        source="OpenAI 兼容原始 HTTP 兜底",
+                    )
+                    response_text_list.append(fallback_text)
+                    is_input_valid = True
+                    break
+                except Exception as fallback_error:
+                    last_exception = fallback_error
+                    last_error_text = (
+                        f"SDK: {_safe_text_for_log(e, max_len=1200)}; "
+                        f"HTTP fallback: {_safe_text_for_log(fallback_error, max_len=1200)}"
+                    )
             error_str = str(e).lower()
             context_msg = f" for {error_context}" if error_context else ""
             _emit_runtime_event(
@@ -1480,7 +1689,12 @@ async def call_openai_with_retry_async(
             if isinstance(res, Exception):
                 response_text_list.append("Error")
             else:
-                response_text_list.append(res.choices[0].message.content)
+                response_text = _extract_openai_chat_text(res)
+                _raise_if_openai_text_response_is_html(
+                    response_text,
+                    source="OpenAI SDK 并发文本接口",
+                )
+                response_text_list.append(response_text or "Error")
 
     return response_text_list
 
@@ -1489,6 +1703,8 @@ def _extract_base64_from_data_url(data_url: str) -> str:
     """从 data URL 中提取纯 base64 字符串。"""
     value = str(data_url or "").strip()
     if not value:
+        return ""
+    if _looks_like_html_response(value):
         return ""
     if value.startswith("data:") and ";base64," in value:
         return value.split(";base64,", 1)[1]
@@ -1585,6 +1801,12 @@ async def _fetch_image_url_as_base64(url: str) -> str:
             content_type = str(response.headers.get("content-type", "") or "").lower()
             if content_type and not content_type.startswith("image/"):
                 logger.warning("OpenAI 图像 URL 返回非图像内容：content-type=%s", _safe_text_for_log(content_type))
+                if any(token in content_type for token in ("text/html", "text/plain", "application/json", "application/xml")):
+                    return ""
+            body_preview = response.content[:1200].decode("utf-8", errors="ignore")
+            if _looks_like_html_response(body_preview):
+                logger.warning("OpenAI 图像 URL 返回 HTML 页面，已丢弃该响应。")
+                return ""
             return base64.b64encode(response.content).decode("utf-8")
     except Exception as exc:
         logger.warning("OpenAI 图像 URL 下载失败：%s", _safe_text_for_log(exc))

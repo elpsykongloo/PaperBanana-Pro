@@ -150,6 +150,146 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
                         error_context="planner[test]",
                     )
 
+    async def test_openai_text_accepts_plain_string_compatible_response(self):
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=AsyncMock(return_value="OK"),
+                )
+            )
+        )
+
+        with patch.object(generation_utils, "get_openai_client", return_value=fake_client):
+            result = await generation_utils.call_openai_with_retry_async(
+                model_name="relay-text-model",
+                contents=[{"type": "text", "text": "hello"}],
+                config={
+                    "system_prompt": "只回复 OK",
+                    "temperature": 0,
+                    "candidate_num": 1,
+                    "max_completion_tokens": 16,
+                },
+                max_attempts=1,
+                retry_delay=0,
+            )
+
+        self.assertEqual(result, ["OK"])
+
+    async def test_openai_text_rejects_gateway_homepage_html(self):
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=AsyncMock(
+                        return_value='<!doctype html><html><head><title>Gateway</title></head></html>'
+                    ),
+                )
+            )
+        )
+
+        with patch.object(generation_utils, "get_openai_client", return_value=fake_client):
+            with self.assertRaisesRegex(RuntimeError, "HTML 页面"):
+                await generation_utils.call_openai_with_retry_async(
+                    model_name="relay-text-model",
+                    contents=[{"type": "text", "text": "hello"}],
+                    config={
+                        "system_prompt": "只回复 OK",
+                        "temperature": 0,
+                        "candidate_num": 1,
+                        "max_completion_tokens": 16,
+                    },
+                    max_attempts=1,
+                    retry_delay=0,
+                    error_context="planner[test]",
+                )
+
+    async def test_openai_text_uses_raw_fallback_when_sdk_shape_fails(self):
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=AsyncMock(
+                        side_effect=AttributeError("'str' object has no attribute 'choices'")
+                    ),
+                )
+            )
+        )
+        captured = {}
+
+        async def fake_raw_fallback(**kwargs):
+            captured.update(kwargs)
+            return "OK"
+
+        context = generation_utils.RuntimeContext(
+            provider="openai_compatible",
+            api_key="secret",
+            base_url="https://relay.example/v1",
+            openai_client=fake_client,
+        )
+
+        with generation_utils.use_runtime_context(context):
+            with patch.object(
+                generation_utils,
+                "_call_openai_chat_completions_raw_async",
+                side_effect=fake_raw_fallback,
+            ):
+                result = await generation_utils.call_openai_with_retry_async(
+                    model_name="relay-text-model",
+                    contents=[{"type": "text", "text": "hello"}],
+                    config={
+                        "system_prompt": "只回复 OK",
+                        "temperature": 0,
+                        "candidate_num": 1,
+                        "max_completion_tokens": 16,
+                    },
+                    max_attempts=1,
+                    retry_delay=0,
+                )
+
+        self.assertEqual(result, ["OK"])
+        self.assertIs(captured["client"], fake_client)
+        self.assertEqual(captured["model_name"], "relay-text-model")
+
+    async def test_openai_text_rejects_html_from_raw_fallback(self):
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=AsyncMock(
+                        side_effect=AttributeError("'str' object has no attribute 'choices'")
+                    ),
+                )
+            )
+        )
+
+        async def fake_raw_fallback(**kwargs):
+            return '<!doctype html><html><head><title>Gateway</title></head></html>'
+
+        context = generation_utils.RuntimeContext(
+            provider="openai_compatible",
+            api_key="secret",
+            base_url="https://relay.example",
+            openai_client=fake_client,
+        )
+
+        with generation_utils.use_runtime_context(context):
+            with patch.object(
+                generation_utils,
+                "_call_openai_chat_completions_raw_async",
+                side_effect=fake_raw_fallback,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "HTML 页面"):
+                    await generation_utils.call_openai_with_retry_async(
+                        model_name="relay-text-model",
+                        contents=[{"type": "text", "text": "hello"}],
+                        config={
+                            "system_prompt": "只回复 OK",
+                            "temperature": 0,
+                            "candidate_num": 1,
+                            "max_completion_tokens": 16,
+                        },
+                        max_attempts=1,
+                        retry_delay=0,
+                        error_context="planner[test]",
+                    )
+
     async def test_image_retry_exhaustion_raises_instead_of_returning_error_string(self):
         fake_client = SimpleNamespace(
             images=SimpleNamespace(
@@ -374,6 +514,14 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, ["downloaded-image-b64"])
         mocked_fetch.assert_awaited_once_with("https://example.test/image.png")
+
+    def test_openai_image_extractor_rejects_html_as_base64(self):
+        self.assertEqual(
+            generation_utils._extract_base64_field(
+                '<!doctype html><html><head><title>Gateway</title></head></html>'
+            ),
+            "",
+        )
 
     async def test_openai_image_generation_falls_back_to_responses_tool(self):
         class _BadGateway(RuntimeError):
