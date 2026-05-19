@@ -46,5 +46,5 @@ openrouter:
 openai:
   api_key: "" # optional if using configs/local/openai_api_key.txt
   base_url: "https://api.openai.com/v1"
-  model_name: "gpt-5.4-mini"
+  model_name: "gpt-5.5"
   image_model_name: "gpt-image-2"

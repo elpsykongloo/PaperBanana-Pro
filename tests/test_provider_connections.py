@@ -114,6 +114,114 @@ class ProviderConnectionsTest(unittest.TestCase):
         self.assertEqual(result.error_type, "provider_unavailable")
         self.assertEqual(list(result.discovered_models), ["manual-text", "manual-image"])
 
+    def test_discover_models_uses_raw_fallback_when_sdk_shape_fails(self):
+        connection = ProviderConnection(
+            connection_id="custom-openai",
+            display_name="自定义 OpenAI",
+            provider_type="openai_compatible",
+            protocol_family="openai",
+            base_url="https://example.com/v1",
+            text_model="manual-text",
+            image_model="manual-image",
+            model_allowlist=("manual-text", "manual-image"),
+            api_key="secret",
+        )
+
+        class _FakeAsyncOpenAI:
+            def __init__(self, **kwargs):
+                self.models = types.SimpleNamespace(list=self._list)
+
+            async def _list(self):
+                raise AttributeError("'str' object has no attribute '_set_private_attributes'")
+
+            async def close(self):
+                return None
+
+        async def fake_raw_models(_connection, *, timeout_seconds):
+            return ["gpt-5.4-mini", "gpt-image-2"]
+
+        fake_module = types.SimpleNamespace(AsyncOpenAI=_FakeAsyncOpenAI)
+        with patch.dict(sys.modules, {"openai": fake_module}):
+            with patch(
+                "utils.provider_connections._fetch_openai_compatible_models_raw",
+                side_effect=fake_raw_models,
+            ):
+                result = run_async_probe(discover_models(connection))
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.stage, "models_list_fallback")
+        self.assertEqual(list(result.discovered_models), ["gpt-5.4-mini", "gpt-image-2"])
+
+    def test_discover_models_does_not_treat_html_as_model_id(self):
+        connection = ProviderConnection(
+            connection_id="custom-openai",
+            display_name="自定义 OpenAI",
+            provider_type="openai_compatible",
+            protocol_family="openai",
+            base_url="https://example.com",
+            text_model="manual-text",
+            image_model="manual-image",
+            model_allowlist=("manual-text", "manual-image"),
+            api_key="secret",
+        )
+
+        class _FakeAsyncOpenAI:
+            def __init__(self, **kwargs):
+                self.models = types.SimpleNamespace(list=self._list)
+
+            async def _list(self):
+                return '<!doctype html><html lang="zh-CN"><head><title>Gateway</title></head></html>'
+
+            async def close(self):
+                return None
+
+        fake_module = types.SimpleNamespace(AsyncOpenAI=_FakeAsyncOpenAI)
+        with patch.dict(sys.modules, {"openai": fake_module}):
+            result = run_async_probe(discover_models(connection))
+
+        self.assertEqual(result.status, "warning")
+        self.assertEqual(list(result.discovered_models), ["manual-text", "manual-image"])
+        self.assertNotIn("<!doctype", ", ".join(result.discovered_models).lower())
+
+    def test_discover_models_hides_sdk_error_when_manual_models_are_kept(self):
+        connection = ProviderConnection(
+            connection_id="custom-openai",
+            display_name="自定义 OpenAI",
+            provider_type="openai_compatible",
+            protocol_family="openai",
+            base_url="https://example.com",
+            text_model="manual-text",
+            image_model="manual-image",
+            model_allowlist=("manual-text", "manual-image"),
+            api_key="secret",
+        )
+
+        class _FakeAsyncOpenAI:
+            def __init__(self, **kwargs):
+                self.models = types.SimpleNamespace(list=self._list)
+
+            async def _list(self):
+                raise AttributeError("'str' object has no attribute '_set_private_attributes'")
+
+            async def close(self):
+                return None
+
+        async def fake_raw_models(_connection, *, timeout_seconds):
+            return []
+
+        fake_module = types.SimpleNamespace(AsyncOpenAI=_FakeAsyncOpenAI)
+        with patch.dict(sys.modules, {"openai": fake_module}):
+            with patch(
+                "utils.provider_connections._fetch_openai_compatible_models_raw",
+                side_effect=fake_raw_models,
+            ):
+                result = run_async_probe(discover_models(connection))
+
+        self.assertEqual(result.status, "warning")
+        self.assertEqual(result.raw_excerpt, "")
+        self.assertIn("手动模型", result.message)
+        self.assertEqual(list(result.discovered_models), ["manual-text", "manual-image"])
+
     def test_probe_text_uses_openai_compatible_runtime_route(self):
         connection = ProviderConnection(
             connection_id="custom-openai",
@@ -429,6 +537,11 @@ class ProviderConnectionsTest(unittest.TestCase):
         )
         self.assertEqual(error_type, "response_incompatible")
         self.assertEqual(status_code, 404)
+
+        error_type, _, _ = classify_probe_error(
+            RuntimeError("OpenAI SDK 文本接口返回了 HTML 页面，而不是 OpenAI 兼容 JSON/文本响应。")
+        )
+        self.assertEqual(error_type, "response_incompatible")
 
     def test_write_connection_probe_result_updates_local_metadata(self):
         root = self._prepare_root()

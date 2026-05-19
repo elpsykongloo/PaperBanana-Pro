@@ -522,6 +522,137 @@ def _clip_raw_excerpt(value: Any, *, max_length: int = 280) -> str:
     return text[:max_length] + "..."
 
 
+def _payload_value(payload: Any, key: str) -> Any:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        return payload.get(key)
+    value = getattr(payload, key, None)
+    if value is not None:
+        return value
+    model_extra = getattr(payload, "model_extra", None)
+    if isinstance(model_extra, dict):
+        return model_extra.get(key)
+    return None
+
+
+def _append_unique_model_id(models: list[str], value: Any) -> None:
+    model_id = str(value or "").strip()
+    if model_id and _looks_like_model_id(model_id) and model_id not in models:
+        models.append(model_id)
+
+
+def _looks_like_html_response(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text[:600] for marker in ("<!doctype", "<html", "<head", "<script"))
+
+
+def _looks_like_model_id(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text or len(text) > 180:
+        return False
+    if _looks_like_html_response(text):
+        return False
+    if any(char in text for char in "<>{}\\\r\n\t"):
+        return False
+    if " " in text:
+        return False
+    return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-=]*$", text))
+
+
+def _extract_model_ids_from_payload(payload: Any) -> list[str]:
+    models: list[str] = []
+    if payload is None:
+        return models
+    if isinstance(payload, str):
+        text = payload.strip()
+        if _looks_like_html_response(text):
+            return models
+        try:
+            parsed_payload = json.loads(text)
+        except Exception:
+            _append_unique_model_id(models, text)
+            return models
+        return _extract_model_ids_from_payload(parsed_payload)
+    if isinstance(payload, list):
+        items = payload
+    else:
+        items = (
+            _payload_value(payload, "data")
+            or _payload_value(payload, "models")
+            or _payload_value(payload, "result")
+            or []
+        )
+        if isinstance(items, dict):
+            items = (
+                items.get("data")
+                or items.get("models")
+                or items.get("result")
+                or []
+            )
+    if not isinstance(items, list):
+        items = [items]
+    for item in items:
+        if isinstance(item, str):
+            _append_unique_model_id(models, item)
+            continue
+        for key in ("id", "name", "model"):
+            model_id = _payload_value(item, key)
+            if model_id:
+                _append_unique_model_id(models, model_id)
+                break
+    return models
+
+
+def _should_try_openai_compatible_raw_fallback(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    message = str(exc or "").lower()
+    return any(
+        marker in name or marker in message
+        for marker in (
+            "validation",
+            "pydantic",
+            "_set_private_attributes",
+            "failed to deserialize",
+            "invalid response object",
+        )
+    )
+
+
+def _openai_compatible_endpoint(base_url: str, path: str) -> str:
+    normalized_base = str(base_url or "https://api.openai.com/v1").strip().rstrip("/")
+    normalized_path = str(path or "").strip().lstrip("/")
+    return f"{normalized_base}/{normalized_path}"
+
+
+async def _fetch_openai_compatible_models_raw(
+    connection: ProviderConnection,
+    *,
+    timeout_seconds: float,
+) -> list[str]:
+    try:
+        import httpx
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("未安装 httpx，无法执行 OpenAI 兼容模型发现兜底。") from exc
+
+    headers = {
+        "Authorization": f"Bearer {connection.api_key or 'no-api-key'}",
+        "Content-Type": "application/json",
+    }
+    headers.update(dict(connection.extra_headers or {}))
+    url = _openai_compatible_endpoint(connection.base_url, "models")
+    async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        try:
+            payload: Any = response.json()
+        except ValueError:
+            payload = response.text
+    return _extract_model_ids_from_payload(payload)
+
+
 def _gemini_finish_reason_name(response: Any) -> str:
     try:
         candidates = list(getattr(response, "candidates", []) or [])
@@ -658,6 +789,11 @@ def classify_probe_error(exc: Exception) -> tuple[str, int, str]:
             http_status = int(getattr(exc, "status", 0) or 0)
         except Exception:
             http_status = 0
+    elif hasattr(exc, "response"):
+        try:
+            http_status = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
+        except Exception:
+            http_status = 0
 
     if APITimeoutError and isinstance(exc, APITimeoutError):
         return "timeout", http_status, message
@@ -685,7 +821,12 @@ def classify_probe_error(exc: Exception) -> tuple[str, int, str]:
     lowered = message.lower()
     if http_status == 401:
         error_type = "invalid_credentials"
-    elif http_status == 404 and ("<!doctype html" in lowered or "<html" in lowered):
+    elif (
+        "<!doctype html" in lowered
+        or "<html" in lowered
+        or "返回了 html 页面" in lowered
+        or "html 页面" in lowered
+    ):
         error_type = "response_incompatible"
     elif "invalid api key" in lowered or (
         "unauthorized" in lowered and http_status in {0, 400, 401, 403}
@@ -766,6 +907,7 @@ async def discover_models(
             timestamp=timestamp,
         )
 
+    client = None
     try:
         client = AsyncOpenAI(
             api_key=connection.api_key or "no-api-key",
@@ -775,24 +917,55 @@ async def discover_models(
             default_headers=connection.extra_headers or None,
         )
         response = await client.models.list()
-        models = []
-        for item in getattr(response, "data", []) or []:
-            model_id = str(getattr(item, "id", "") or "").strip()
-            if model_id and model_id not in models:
-                models.append(model_id)
+        models = _extract_model_ids_from_payload(response)
         await client.close()
-        message = "已成功获取远端模型列表。" if models else "模型列表接口返回为空。"
+        client = None
+        message = "已成功获取远端模型列表。" if models else "模型列表接口未返回可用模型，保留手动模型输入。"
         status = "success" if models else "warning"
         return ProbeResult(
             target="discovery",
             stage="models_list",
             status=status,
             message=message,
-            discovered_models=tuple(models),
+            discovered_models=tuple(models or allowlist),
             latency_ms=_build_probe_latency_ms(started_at),
             timestamp=timestamp,
         )
     except Exception as exc:
+        if _should_try_openai_compatible_raw_fallback(exc):
+            try:
+                models = await _fetch_openai_compatible_models_raw(
+                    connection,
+                    timeout_seconds=timeout_seconds,
+                )
+                message = "已通过 OpenAI 兼容兜底获取远端模型列表。" if models else "模型列表接口不兼容或未返回可用模型，已保留手动模型输入。"
+                status = "success" if models else "warning"
+                return ProbeResult(
+                    target="discovery",
+                    stage="models_list_fallback",
+                    status=status,
+                    message=message,
+                    raw_excerpt=_clip_raw_excerpt(f"SDK 解析失败，已改用原始 HTTP：{exc}") if models else "",
+                    discovered_models=tuple(models or allowlist),
+                    latency_ms=_build_probe_latency_ms(started_at),
+                    timestamp=timestamp,
+                )
+            except Exception as fallback_exc:
+                error_type, http_status, message = classify_probe_error(fallback_exc)
+                return ProbeResult(
+                    target="discovery",
+                    stage="models_list",
+                    status="failed",
+                    error_type=error_type,
+                    http_status=http_status,
+                    message="模型发现失败，可继续手动填写模型名。",
+                    raw_excerpt=_clip_raw_excerpt(
+                        f"SDK: {exc}; HTTP fallback: {fallback_exc}"
+                    ),
+                    discovered_models=tuple(allowlist),
+                    latency_ms=_build_probe_latency_ms(started_at),
+                    timestamp=timestamp,
+                )
         error_type, http_status, message = classify_probe_error(exc)
         return ProbeResult(
             target="discovery",
@@ -806,6 +979,12 @@ async def discover_models(
             latency_ms=_build_probe_latency_ms(started_at),
             timestamp=timestamp,
         )
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
 
 async def probe_text(connection: ProviderConnection) -> ProbeResult:
