@@ -163,6 +163,26 @@ class RetrieverAgentTest(unittest.TestCase):
         self.assertIn("relevant_plot", shortlisted_ids)
         self.assertIn("also_relevant", shortlisted_ids)
 
+    def test_parse_retrieval_result_accepts_common_output_shapes(self):
+        work_dir = self._build_work_dir()
+        agent = self._build_agent(work_dir, task_name="diagram")
+
+        self.assertEqual(
+            agent._parse_retrieval_result('{"top10_references":["ref_a","ref_b"]}', "diagram"),
+            ["ref_a", "ref_b"],
+        )
+        self.assertEqual(
+            agent._parse_retrieval_result('```json\n["ref_a","ref_b"]\n```', "diagram"),
+            ["ref_a", "ref_b"],
+        )
+        self.assertEqual(
+            agent._parse_retrieval_result(
+                '{"selected_ids":[{"id":"ref_a"},{"reference_id":"ref_b"}]}',
+                "diagram",
+            ),
+            ["ref_a", "ref_b"],
+        )
+
     def test_auto_retrieval_populates_retrieved_examples(self):
         work_dir = self._build_work_dir()
         diagram_dir = work_dir / "data" / "PaperBananaBench" / "diagram"
@@ -199,6 +219,43 @@ class RetrieverAgentTest(unittest.TestCase):
 
         self.assertEqual(result["top10_references"], ["ref_hit"])
         self.assertEqual([item["id"] for item in result["retrieved_examples"]], ["ref_hit"])
+
+    def test_auto_retrieval_falls_back_when_model_returns_no_valid_ids(self):
+        work_dir = self._build_work_dir()
+        diagram_dir = work_dir / "data" / "PaperBananaBench" / "diagram"
+        diagram_dir.mkdir(parents=True, exist_ok=True)
+        candidates = [
+            {
+                "id": "ref_first",
+                "visual_intent": "Overview diagram for an agent pipeline.",
+                "content": "We encode papers and refine figures with a critic loop.",
+            },
+            {
+                "id": "ref_second",
+                "visual_intent": "Detailed module diagram for retrieval.",
+                "content": "A retriever ranks references and forwards selected ids.",
+            },
+        ]
+        (diagram_dir / "ref.json").write_text(json.dumps(candidates, ensure_ascii=False), encoding="utf-8")
+        agent = self._build_agent(work_dir, task_name="diagram")
+
+        with patch(
+            "agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async",
+            new=AsyncMock(return_value=['{"top10_references":["missing_ref"]}']),
+        ):
+            result = asyncio.run(
+                agent.process(
+                    {
+                        "candidate_id": 0,
+                        "content": "We encode papers and refine figures with a critic loop.",
+                        "visual_intent": "Overview diagram for an agent pipeline.",
+                    },
+                    retrieval_setting="auto",
+                )
+            )
+
+        self.assertEqual(result["top10_references"], ["ref_first", "ref_second"])
+        self.assertEqual([item["id"] for item in result["retrieved_examples"]], ["ref_first", "ref_second"])
 
 
 if __name__ == "__main__":

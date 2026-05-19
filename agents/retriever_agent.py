@@ -76,7 +76,7 @@ class RetrieverAgent(BaseAgent):
                 "candidate_labels": ["Plot ID", "Visual Intent", "Raw Data"],
                 "candidate_type": "Plot",
                 "output_key": "top10_references",
-                "instruction_suffix": "select the Top 10 most relevant plots according to the instructions provided. Your output should be a strictly valid JSON object containing a single list of the exact ids of the top 10 selected plots.",
+                "instruction_suffix": 'select the Top 10 most relevant plots according to the instructions provided. Your output must be a strictly valid JSON object with exactly one key, "top10_references", whose value is a list of the exact ids of the top 10 selected plots.',
             }
         else:
             self.system_prompt = DIAGRAM_RETRIEVER_AGENT_SYSTEM_PROMPT
@@ -89,7 +89,7 @@ class RetrieverAgent(BaseAgent):
                 "candidate_labels": ["Diagram ID", "Caption", "Methodology section"],
                 "candidate_type": "Diagram",
                 "output_key": "top10_references",
-                "instruction_suffix": "select the Top 10 most relevant diagrams according to the instructions provided. Your output should be a strictly valid JSON object containing a single list of the exact ids of the top 10 selected diagrams.",
+                "instruction_suffix": 'select the Top 10 most relevant diagrams according to the instructions provided. Your output must be a strictly valid JSON object with exactly one key, "top10_references", whose value is a list of the exact ids of the top 10 selected diagrams.',
             }
 
     async def process(self, data: Dict[str, Any], retrieval_setting: str = "auto") -> Dict[str, Any]:
@@ -209,6 +209,115 @@ class RetrieverAgent(BaseAgent):
         id_list = [item["id"] for item in candidate_pool]
         sample_size = min(10, len(id_list))
         return random.sample(id_list, sample_size) if sample_size > 0 else []
+
+    @staticmethod
+    def _normalize_retrieved_ids(values: Any) -> list[str]:
+        if values is None:
+            return []
+
+        if isinstance(values, dict):
+            for key in ["id", "reference_id", "diagram_id", "plot_id"]:
+                if key in values:
+                    return RetrieverAgent._normalize_retrieved_ids(values.get(key))
+            return []
+
+        if isinstance(values, (list, tuple, set)):
+            normalized_ids: list[str] = []
+            seen: set[str] = set()
+            for value in values:
+                for ref_id in RetrieverAgent._normalize_retrieved_ids(value):
+                    if ref_id not in seen:
+                        normalized_ids.append(ref_id)
+                        seen.add(ref_id)
+            return normalized_ids
+
+        text = str(values or "").strip()
+        return [text] if text else []
+
+    @staticmethod
+    def _candidate_pool_ids(candidate_pool: list[dict], limit: int = 10) -> list[str]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        for item in candidate_pool:
+            if not isinstance(item, dict):
+                continue
+            ref_id = str(item.get("id", "") or "").strip()
+            if not ref_id or ref_id in seen:
+                continue
+            ids.append(ref_id)
+            seen.add(ref_id)
+            if len(ids) >= limit:
+                break
+        return ids
+
+    @staticmethod
+    def _json_payload_candidates(raw_response: str) -> list[str]:
+        text = str(raw_response or "").strip()
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add_candidate(candidate: str) -> None:
+            candidate = str(candidate or "").strip()
+            if candidate and candidate not in seen:
+                candidates.append(candidate)
+                seen.add(candidate)
+
+        add_candidate(text)
+        for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL):
+            add_candidate(match.group(1))
+
+        for opener, closer in [("{", "}"), ("[", "]")]:
+            start = text.find(opener)
+            end = text.rfind(closer)
+            if start != -1 and end > start:
+                add_candidate(text[start : end + 1])
+
+        return candidates
+
+    def _extract_retrieval_ids_from_payload(self, payload: Any, task_name: str) -> list[str]:
+        if isinstance(payload, list):
+            return self._normalize_retrieved_ids(payload)
+
+        if not isinstance(payload, dict):
+            return self._normalize_retrieved_ids(payload)
+
+        if task_name == "plot":
+            task_keys = ["top10_plots", "top_plots", "plots", "plot_ids"]
+        elif task_name == "diagram":
+            task_keys = ["top10_diagrams", "top_diagrams", "diagrams", "diagram_ids"]
+        else:
+            raise ValueError(f"Unknown task_name: {task_name}")
+
+        common_keys = [
+            "top10_references",
+            "top_10_references",
+            "selected_ids",
+            "reference_ids",
+            "ids",
+            "top10",
+            "top_10",
+            "references",
+            "results",
+            "items",
+        ]
+        for key in [*task_keys, *common_keys]:
+            if key not in payload:
+                continue
+            ids = self._extract_retrieval_ids_from_payload(payload.get(key), task_name)
+            if ids:
+                return ids
+
+        return self._normalize_retrieved_ids(payload)
+
+    @staticmethod
+    def _extract_reference_ids_from_text(raw_response: str) -> list[str]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        for ref_id in re.findall(r"\bref_[A-Za-z0-9_.:-]+\b", str(raw_response or "")):
+            if ref_id not in seen:
+                ids.append(ref_id)
+                seen.add(ref_id)
+        return ids
 
     @staticmethod
     def _stringify_payload(value: Any) -> str:
@@ -334,28 +443,60 @@ class RetrieverAgent(BaseAgent):
             error_context=f"retriever[candidate={candidate_id},lite={lite}]",
         )
 
-        raw_response = response_list[0].strip()
-        retrieved_ids = self._parse_retrieval_result(raw_response, cfg["task_name"])
-        id_to_item = {item["id"]: item for item in candidate_pool}
+        raw_response = str(response_list[0]).strip() if response_list else ""
+        parsed_ids = self._parse_retrieval_result(raw_response, cfg["task_name"])
+        id_to_item = {
+            str(item.get("id", "") or "").strip(): item
+            for item in candidate_pool
+            if isinstance(item, dict) and str(item.get("id", "") or "").strip()
+        }
+        retrieved_ids = [ref_id for ref_id in parsed_ids if ref_id in id_to_item]
+        missing_ids = [ref_id for ref_id in parsed_ids if ref_id not in id_to_item]
+
+        if missing_ids:
+            logger.warning(
+                "⚠️  检索模型返回了 %s 个不在候选池中的 id，已忽略: %s",
+                len(missing_ids),
+                missing_ids[:5],
+            )
+
+        if not retrieved_ids:
+            fallback_ids = self._candidate_pool_ids(candidate_pool, limit=10)
+            if fallback_ids:
+                logger.warning(
+                    "⚠️  检索模型未返回可匹配的参考 id，使用预筛候选兜底: %s",
+                    fallback_ids,
+                )
+                logger.debug("检索模型原始响应片段: %s", raw_response[:500])
+                retrieved_ids = fallback_ids
+
         retrieved_examples = [id_to_item[ref_id] for ref_id in retrieved_ids if ref_id in id_to_item]
         return retrieved_ids, retrieved_examples
 
     def _parse_retrieval_result(self, raw_response: str, task_name: str) -> list:
         import json_repair
 
-        try:
-            parsed = json_repair.loads(raw_response)
+        last_error = None
+        for candidate in self._json_payload_candidates(raw_response):
+            try:
+                parsed = json_repair.loads(candidate)
+                ids = self._extract_retrieval_ids_from_payload(parsed, task_name)
+                if ids:
+                    return ids
+            except Exception as e:
+                last_error = e
 
-            if task_name == "plot":
-                return parsed.get("top10_plots", [])
-            elif task_name == "diagram":
-                return parsed.get("top10_diagrams", [])
-            else:
-                raise ValueError(f"Unknown task_name: {task_name}")
-        except Exception as e:
-            logger.warning(f"⚠️  解析检索结果失败: {e}")
-            logger.debug(f"   原始响应: {raw_response[:200]}...")
-            return []
+        ids_from_text = self._extract_reference_ids_from_text(raw_response)
+        if ids_from_text:
+            logger.warning("⚠️  检索结果不是标准 JSON，已从文本中提取参考 id")
+            return ids_from_text
+
+        if last_error is not None:
+            logger.warning(f"⚠️  解析检索结果失败: {last_error}")
+        else:
+            logger.warning("⚠️  检索结果中没有可用参考 id")
+        logger.debug(f"   原始响应: {raw_response[:500]}...")
+        return []
 
 
 DIAGRAM_RETRIEVER_AGENT_SYSTEM_PROMPT = """
@@ -411,7 +552,7 @@ Candidate Diagram i:
 Provide your output strictly in the following JSON format, containing only the **exact IDs** of the Top 10 selected diagrams (use the exact IDs from the Candidate Pool, such as "ref_1", "ref_25", "ref_100", etc.):
 ```json
 {
-  "top10_diagrams": [
+  "top10_references": [
     "ref_1",
     "ref_25",
     "ref_100",
@@ -480,7 +621,7 @@ Candidate Plot i:
 Provide your output strictly in the following JSON format, containing only the **exact Plot IDs** of the Top 10 selected plots (use the exact IDs from the Candidate Pool, such as "ref_0", "ref_25", "ref_100", etc.):
 ```json
 {
-  "top10_plots": [
+  "top10_references": [
     "ref_0",
     "ref_25",
     "ref_100",
