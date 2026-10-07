@@ -35,6 +35,7 @@ from utils.pipeline_state import (
     get_available_critic_rounds,
     stage_display_label,
 )
+from utils.demo_task_utils import collect_candidate_references, summarize_retrieval_meta
 from utils.result_order import format_candidate_display_label
 from utils.result_paths import resolve_gt_image_path
 from visualize.viewer_helpers import (
@@ -192,6 +193,22 @@ def display_stage_comparison(item, results_path):
                         if suggestions and suggestions.strip() != "No changes needed.":
                             with st.expander("💬 评审建议", expanded=False):
                                 st.write(suggestions)
+
+def display_references(item):
+    """展示检索到的参考 id、图注与检索摘要（旧结果只有 id 时同样可用）。"""
+    references = collect_candidate_references(item)
+    meta_summary = summarize_retrieval_meta(item.get("retrieval_meta"))
+    if not references and not meta_summary:
+        return
+    with st.expander(f"📚 使用的参考（{len(references)} 条）", expanded=False):
+        if meta_summary:
+            st.caption(meta_summary)
+        for reference in references:
+            caption = reference.get("caption") or ""
+            if len(caption) > 160:
+                caption = caption[:160] + "…"
+            st.markdown(f"- **{reference['id']}** {caption}")
+
 
 def display_critique(item):
     """Display the critique if available."""
@@ -374,6 +391,9 @@ def main():
                 bundle_source.source_name if bundle_source.source_kind == "path" else None,
             )
             
+            # 本样本使用的参考
+            display_references(item)
+
             # Critique
             display_critique(item)
             

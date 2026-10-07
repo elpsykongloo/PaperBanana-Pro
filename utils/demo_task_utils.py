@@ -211,3 +211,78 @@ def build_evolution_stages(result, exp_mode: str, task_name: str = "diagram"):
         stages.append(stage)
 
     return stages
+
+
+_RETRIEVAL_METHOD_LABELS = {
+    "bm25+llm": "关键词预筛 + 模型挑选",
+    "bm25+vlm": "关键词预筛 + 模型看缩略图挑选",
+    "curated": "固定参考集",
+    "random": "随机抽取",
+    "none": "不使用参考",
+}
+_RETRIEVAL_FALLBACK_LABELS = {
+    "shortlist_order": "模型未返回有效 id，直接使用预筛结果",
+    "no_query_tokens_all_captions": "输入里没有可用关键词，改为让模型浏览全部参考",
+    "no_query_tokens_file_order": "输入里没有可用关键词，按文件顺序截取",
+}
+
+
+def summarize_retrieval_meta(meta) -> str:
+    """把 retrieval_meta 转成一行中文摘要；旧结果没有该字段时返回空字符串。"""
+    if not isinstance(meta, dict) or not meta:
+        return ""
+    parts: list[str] = []
+    method = meta.get("method")
+    if method:
+        parts.append(f"方式：{_RETRIEVAL_METHOD_LABELS.get(method, method)}")
+    if meta.get("mode") == "full":
+        parts.append("候选参考附完整正文")
+    if meta.get("pool_size") is not None:
+        parts.append(f"参考池 {meta['pool_size']} 条")
+    if method in ("bm25+llm", "bm25+vlm") and meta.get("shortlist_size") is not None:
+        parts.append(f"预筛 {meta['shortlist_size']} 条")
+    if method == "bm25+vlm" and meta.get("thumbnails") is not None:
+        parts.append(f"附缩略图 {meta['thumbnails']} 张")
+    if meta.get("visual_rerank_failed"):
+        parts.append("看图挑选失败，已改为只看 caption 挑选")
+    if meta.get("selected") is not None:
+        parts.append(f"模型选中 {meta['selected']} 条")
+    if meta.get("repaired_ids"):
+        parts.append(f"补全了 {meta['repaired_ids']} 个只含数字的 id")
+    if meta.get("topped_up"):
+        parts.append(f"按预筛顺序补齐 {meta['topped_up']} 条")
+    if meta.get("query_rewritten"):
+        parts.append("中文输入已改写为英文关键词再检索")
+    if meta.get("fallback"):
+        parts.append(_RETRIEVAL_FALLBACK_LABELS.get(meta["fallback"], str(meta["fallback"])))
+    if meta.get("missing_ids"):
+        parts.append(f"参考集中有 {len(meta['missing_ids'])} 个 id 不在参考池")
+    if meta.get("shared"):
+        parts.append("复用本任务已有的检索结果")
+    requested, effective = meta.get("requested_setting"), meta.get("setting")
+    if requested and effective and requested != effective:
+        parts.append(f"已从 {requested} 回退为 {effective}")
+    return "；".join(parts)
+
+
+def collect_candidate_references(result) -> list[dict]:
+    """返回候选使用的参考 [{id, caption, path_to_gt_image}]；兼容只记录了 id 的旧结果。"""
+    if not isinstance(result, dict):
+        return []
+    ids = [str(ref_id).strip() for ref_id in (result.get("top10_references") or []) if str(ref_id).strip()]
+    examples = {
+        str(item.get("id", "") or "").strip(): item
+        for item in (result.get("retrieved_examples") or [])
+        if isinstance(item, dict)
+    }
+    references = []
+    for ref_id in ids or [key for key in examples if key]:
+        item = examples.get(ref_id, {})
+        references.append(
+            {
+                "id": ref_id,
+                "caption": str(item.get("visual_intent", "") or ""),
+                "path_to_gt_image": item.get("path_to_gt_image"),
+            }
+        )
+    return references

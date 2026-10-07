@@ -2,9 +2,11 @@ import unittest
 
 from utils.demo_task_utils import (
     build_evolution_stages,
+    collect_candidate_references,
     create_sample_inputs,
     find_final_stage_keys,
     get_task_ui_config,
+    summarize_retrieval_meta,
 )
 
 
@@ -78,6 +80,51 @@ class DemoTaskUtilsTest(unittest.TestCase):
 
         self.assertFalse(plot_config["uses_image_model"])
         self.assertTrue(diagram_config["uses_image_model"])
+
+    def test_summarize_retrieval_meta_handles_old_and_new_results(self):
+        self.assertEqual(summarize_retrieval_meta(None), "")
+        self.assertEqual(summarize_retrieval_meta({}), "")
+        summary = summarize_retrieval_meta(
+            {
+                "requested_setting": "auto",
+                "setting": "auto",
+                "method": "bm25+llm",
+                "mode": "lite",
+                "pool_size": 298,
+                "shortlist_size": 40,
+                "selected": 2,
+                "topped_up": 8,
+                "query_rewritten": True,
+                "shared": True,
+            }
+        )
+        self.assertIn("关键词预筛 + 模型挑选", summary)
+        self.assertIn("参考池 298 条", summary)
+        self.assertIn("按预筛顺序补齐 8 条", summary)
+        self.assertIn("中文输入已改写", summary)
+        self.assertIn("复用本任务", summary)
+        fallback = summarize_retrieval_meta({"requested_setting": "auto", "setting": "none", "method": "none"})
+        self.assertIn("已从 auto 回退为 none", fallback)
+        visual = summarize_retrieval_meta({"method": "bm25+vlm", "shortlist_size": 40, "thumbnails": 40, "selected": 10})
+        self.assertIn("模型看缩略图挑选", visual)
+        self.assertIn("预筛 40 条", visual)
+        self.assertIn("附缩略图 40 张", visual)
+        self.assertIn("补全了 3 个只含数字的 id", summarize_retrieval_meta({"method": "bm25+vlm", "repaired_ids": 3}))
+        failed = summarize_retrieval_meta({"method": "bm25+llm", "visual_rerank_failed": True})
+        self.assertIn("已改为只看 caption 挑选", failed)
+
+    def test_collect_candidate_references_supports_id_only_results(self):
+        result = {
+            "top10_references": ["ref_2", "ref_9"],
+            "retrieved_examples": [
+                {"id": "ref_2", "visual_intent": "Overview pipeline.", "path_to_gt_image": "images/a.jpg"},
+            ],
+        }
+        refs = collect_candidate_references(result)
+        self.assertEqual([ref["id"] for ref in refs], ["ref_2", "ref_9"])
+        self.assertEqual(refs[0]["caption"], "Overview pipeline.")
+        self.assertIsNone(refs[1]["path_to_gt_image"])
+        self.assertEqual(collect_candidate_references({}), [])
 
 
 if __name__ == "__main__":

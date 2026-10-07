@@ -38,6 +38,7 @@ import sys
 import os
 from datetime import datetime
 from dataclasses import dataclass, field
+from functools import lru_cache
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
@@ -130,7 +131,7 @@ try:
         write_provider_api_key,
         write_provider_base_url,
     )
-    from utils.dataset_paths import DEFAULT_DATASET_NAME, get_reference_file_path
+    from utils.dataset_paths import DEFAULT_DATASET_NAME, get_reference_file_path, resolve_data_asset_path
     from utils.demo_job_store import (
         append_job_event,
         read_job_events,
@@ -141,10 +142,12 @@ try:
     )
     from utils.demo_task_utils import (
         build_evolution_stages,
+        collect_candidate_references,
         create_sample_inputs,
         find_final_stage_keys,
         get_task_ui_config,
         normalize_task_name,
+        summarize_retrieval_meta,
     )
     from utils import image_utils
     from utils.concurrency import compute_effective_concurrency
@@ -4567,6 +4570,12 @@ async def refine_image_with_nanoviz(
                                 temperature=1.0,
                                 max_output_tokens=8192,
                                 response_modalities=["IMAGE"],
+                                # 宽高比与分辨率必须经 ImageConfig 传入才会生效
+                                image_config=image_utils.build_gemini_image_config(
+                                    runtime_settings.image_model_name,
+                                    aspect_ratio,
+                                    image_size,
+                                ),
                             ),
                             max_attempts=max(2, int(max_attempts or 2)),
                             retry_delay=5,
@@ -5327,6 +5336,59 @@ def display_candidate_result(
                 st.write(cleaned_desc)
             else:
                 st.info("暂无描述")
+
+    render_candidate_references(
+        result,
+        task_name=task_name,
+        widget_key=f"{candidate_id}_{candidate_index}",
+    )
+
+
+@lru_cache(maxsize=512)
+def _load_reference_thumbnail(path_str: str, max_side: int = 360) -> bytes | None:
+    """参考图缩略图（JPEG 字节），避免把原图反复传给浏览器。"""
+    try:
+        with Image.open(path_str) as image:
+            image = image.convert("RGB")
+            image.thumbnail((max_side, max_side))
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=85)
+            return buffer.getvalue()
+    except (OSError, UnidentifiedImageError):
+        return None
+
+
+def render_candidate_references(result, *, task_name: str, widget_key: str) -> None:
+    """展示候选实际使用的参考样例与检索摘要。"""
+    references = collect_candidate_references(result)
+    meta_summary = summarize_retrieval_meta(result.get("retrieval_meta"))
+    if not references and not meta_summary:
+        return
+    with st.expander(f"📚 查看本候选使用的参考（{len(references)} 条）", expanded=False):
+        if meta_summary:
+            st.caption(meta_summary)
+        if not references:
+            st.info("本候选没有使用参考样例。")
+            return
+        show_thumbnails = st.checkbox("显示参考缩略图", value=False, key=f"show_reference_thumbnails_{widget_key}")
+        # 候选卡片可能很窄，按纵向列表展示，避免多列挤压文字
+        for reference in references:
+            if show_thumbnails:
+                image_path = resolve_data_asset_path(
+                    reference.get("path_to_gt_image"),
+                    task_name,
+                    dataset_name=result.get("dataset_name"),
+                    work_dir=REPO_ROOT,
+                )
+                thumbnail = _load_reference_thumbnail(str(image_path)) if image_path else None
+                if thumbnail:
+                    st.image(thumbnail, width="stretch")
+                else:
+                    st.caption("（未找到参考图）")
+            caption = reference.get("caption") or ""
+            if len(caption) > 100:
+                caption = caption[:100] + "…"
+            st.caption(f"**{reference['id']}** · {caption}" if caption else f"**{reference['id']}**")
 
 
 def render_plot_rerender_workspace() -> None:

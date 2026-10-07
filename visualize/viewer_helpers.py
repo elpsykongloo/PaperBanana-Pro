@@ -102,11 +102,14 @@ def render_bundle_manifest_sidebar(
         ("Provider", "provider"),
         ("文本模型", "model_name"),
         ("图像模型", "image_model_name"),
+        ("检索策略", "retrieval_setting"),
     ]
     for label, key in manifest_fields:
         value = manifest.get(key)
         if value:
             st.write(f"**{label}：** {value}")
+    if manifest.get("retrieval_setting") in ("curated", "manual") and manifest.get("curated_profile"):
+        st.write(f"**固定参考集：** {manifest['curated_profile']}")
     st.write(f"**结果数：** {manifest.get('result_count', result_count)}")
 
 

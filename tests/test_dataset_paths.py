@@ -28,6 +28,25 @@ class DatasetPathsTest(unittest.TestCase):
                 root / "data" / "CustomBench" / "diagram" / "ref.json",
             )
 
+    def test_resolve_data_asset_path_finds_zip_mojibake_filename(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            images_dir = root / "data" / "PaperBananaBench" / "diagram" / "images"
+            images_dir.mkdir(parents=True)
+            original_name = "Scalable inference‑time alignment_diagram.jpg"
+            on_disk = images_dir / original_name.encode("utf-8").decode("cp437")
+            on_disk.write_bytes(b"jpg")
+
+            resolved = resolve_data_asset_path(
+                f"images/{original_name}",
+                "diagram",
+                dataset_name="PaperBananaBench",
+                work_dir=root,
+            )
+
+            self.assertIsNotNone(resolved)
+            self.assertPathsEquivalent(resolved, on_disk)
+
     def test_resolve_data_asset_path_prefers_explicit_dataset(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

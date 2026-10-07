@@ -207,16 +207,20 @@ class BaseAgent(ABC):
                 image_size=image_resolution,
             )
             gemini_contents = self._inject_prompt_into_contents(_contents, prompt_with_hints)
+            config_kwargs: Dict[str, Any] = {
+                "system_instruction": _sys,
+                "temperature": _temp,
+                "candidate_count": 1,
+                "max_output_tokens": max_output_tokens,
+                "response_modalities": ["IMAGE"],
+            }
+            image_config = image_utils.build_gemini_image_config(_model, aspect_ratio, image_resolution)
+            if image_config is not None:
+                config_kwargs["image_config"] = image_config
             return await generation_utils.call_gemini_with_retry_async(
                 model_name=_model,
                 contents=gemini_contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=_sys,
-                    temperature=_temp,
-                    candidate_count=1,
-                    max_output_tokens=max_output_tokens,
-                    response_modalities=["IMAGE"],
-                ),
+                config=types.GenerateContentConfig(**config_kwargs),
                 max_attempts=max_attempts,
                 retry_delay=retry_delay,
                 error_context=error_context,

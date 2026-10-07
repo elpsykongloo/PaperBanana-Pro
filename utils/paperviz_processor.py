@@ -519,6 +519,9 @@ class PaperVizProcessor:
                     "error": err_summary,
                     "error_detail": err_detail,
                     "eval_image_field": None,
+                    # 检索阶段已完成时保留参考 id 与检索摘要，便于排查（不保留体积较大的示例正文）
+                    "top10_references": list(doc.get("top10_references") or []),
+                    "retrieval_meta": doc.get("retrieval_meta"),
                 }
 
         prepared_items = [
