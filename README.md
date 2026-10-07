@@ -211,7 +211,7 @@ paperbanana viewer eval        # 查看带参考结果的评估
 
 | 阶段 | 作用 |
 | --- | --- |
-| Retriever | 从参考池中检索 few-shot 样例 |
+| Retriever | 从参考池中检索 few-shot 样例：对整个参考池做 BM25 关键词预筛（中文输入先改写为英文关键词），再由模型挑选 10 条（diagram 会同时看候选缩略图，按图类型和布局挑选）；同一任务的所有候选共用一次检索，所用参考可在结果卡片中查看 |
 | Planner | 生成结构化的可视化描述 |
 | Stylist | 优化学术表达和风格一致性 |
 | Visualizer | 生成图像（diagram）或 Matplotlib 代码（plot） |

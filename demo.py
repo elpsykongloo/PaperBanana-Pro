@@ -916,8 +916,8 @@ RETRIEVAL_NOTICE_LEVELS = {
     "none": "success",
 }
 RETRIEVAL_NOTICE_TEXT = {
-    "auto": "默认推荐。只依据你的图注或可视化目标来匹配参考，成本低、速度快，适合大多数试跑。",
-    "auto-full": "高精度模式。会把候选参考的完整内容交给模型判断，命中率更稳，但耗时和成本都会明显增加。",
+    "auto": "默认推荐。先按关键词在整个参考池里预筛，再把你的输入和候选参考的图注（diagram 另附缩略图）交给模型挑选；同一任务的所有候选共用一次检索。",
+    "auto-full": "高精度模式。预筛后把较少候选参考的完整正文交给模型判断，耗时和成本明显更高；同一任务的所有候选共用一次检索。",
     "curated": "固定参考集模式。使用你指定的 few-shot 配置，适合做复现实验、A/B 对照和开发调试。",
     "random": "随机样本模式。直接从参考池抽取示例，不额外调用检索推理，适合快速试跑。",
     "none": "纯生成模式。不加载任何参考样例，成本最低，适合先看基础出图效果。",
@@ -6436,8 +6436,12 @@ def render_generation_sidebar_controls() -> dict:
         )
         retrieval_notice = RETRIEVAL_NOTICE_TEXT[retrieval_setting]
         if retrieval_setting == "auto":
+            retrieval_candidate_material = (
+                retrieval_target_label if task_name == "plot" else f"{retrieval_target_label}和缩略图"
+            )
             retrieval_notice = (
-                f"默认推荐。只把你的{retrieval_target_label}发给模型做参考匹配，成本低、速度快，适合大多数试跑。"
+                f"默认推荐。先按关键词在整个参考池里预筛，再把你的输入和候选参考的{retrieval_candidate_material}交给模型挑选；"
+                "同一任务的所有候选共用一次检索。"
             )
         st.caption(retrieval_notice)
 
