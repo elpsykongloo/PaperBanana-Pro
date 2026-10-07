@@ -868,14 +868,13 @@ COMMON_ASPECT_RATIOS = [
 
 
 GEMINI_TEXT_MODELS = [
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3-flash-preview",
+    "gemini-3.8-flash",
+    "gemini-3.1-flash-lite",
 ]
 
 GEMINI_IMAGE_MODELS = [
-    "gemini-3-pro-image-preview",
-    "gemini-3.1-flash-image-preview",
+    "gemini-nano-banana-2.1",
+    "gemini-3-pro-image",
 ]
 
 CUSTOM_MODEL_OPTION = "自定义"

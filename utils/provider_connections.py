@@ -30,6 +30,8 @@ BUILTIN_CONNECTION_IDS = ("gemini", "evolink", "openrouter", "openai")
 CUSTOM_PROVIDER_TYPE = "openai_compatible"
 SUPPORTED_PROVIDER_TYPES = (*BUILTIN_CONNECTION_IDS, CUSTOM_PROVIDER_TYPE)
 CONNECTION_ID_RE = re.compile(r"[^a-z0-9-]+")
+# 文本探针的输出上限：思考模型（如 gemini-3.8-flash）的思考 token 计入上限，设为 8 时会返回空文本被误判为失败
+PROBE_MAX_OUTPUT_TOKENS = 1024
 
 
 @dataclass(frozen=True)
@@ -1021,7 +1023,7 @@ async def probe_text(connection: ProviderConnection) -> ProbeResult:
                 model_name=tested_model,
                 prompt="只回复 OK。",
                 system_instruction="你是连接探针，只回复 OK。",
-                max_output_tokens=8,
+                max_output_tokens=PROBE_MAX_OUTPUT_TOKENS,
             )
             response_texts = _extract_gemini_text_response(response)
             finish_reason = _gemini_finish_reason_name(response)
@@ -1073,7 +1075,7 @@ async def probe_text(connection: ProviderConnection) -> ProbeResult:
                     config={
                         "system_prompt": "只回复 OK。",
                         "temperature": 0,
-                        "max_output_tokens": 8,
+                        "max_output_tokens": PROBE_MAX_OUTPUT_TOKENS,
                     },
                     max_attempts=1,
                     retry_delay=0,
@@ -1087,7 +1089,7 @@ async def probe_text(connection: ProviderConnection) -> ProbeResult:
                         "system_prompt": "只回复 OK。",
                         "temperature": 0,
                         "candidate_num": 1,
-                        "max_completion_tokens": 8,
+                        "max_completion_tokens": PROBE_MAX_OUTPUT_TOKENS,
                     },
                     max_attempts=1,
                     retry_delay=0,

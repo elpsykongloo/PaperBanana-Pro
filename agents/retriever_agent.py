@@ -72,7 +72,8 @@ SHARED_RETRIEVAL_CACHE_LIMIT = 128
 ALL_CAPTIONS_FALLBACK_LIMIT = 400
 # diagram 的 auto 模式：预筛候选附缩略图，让模型按图类型和布局挑选。
 # 小样本实验（对照原图的 0–3 分有用度盲评，top-10 平均分）：gemini-3-flash 80 条 1.60 → 1.66；
-# 默认的 gemini-3.1-flash-lite 40 条 1.48 → 1.62。两组配对差的 95% 置信区间都不含 0。
+# gemini-3.1-flash-lite 40 条 1.48 → 1.62。两组配对差的 95% 置信区间都不含 0。
+# 同 40 条附缩略图：gemini-3.8-flash 1.68，gemini-3.5-flash-lite 1.61。
 VISUAL_RERANK_THUMBNAIL_MAX_SIDE = 512
 VISUAL_RERANK_TARGET_CHAR_LIMIT = 6000
 VISUAL_RERANK_CAPTION_CHAR_LIMIT = 300

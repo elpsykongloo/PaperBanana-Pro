@@ -148,9 +148,12 @@ Copy-Item configs\model_config.template.yaml configs\model_config.yaml
 当前正式支持 4 个 Provider：**Gemini**、**OpenAI**、**Openrouter** 和 **Evolink**。
 
 > [!NOTE]
-> **图像模型推荐优先级**：Banana Pro（Evolink `nano-banana-2-lite`）> GPT Image 2（OpenAI `gpt-image-2`）> Banana 2（Evolink 旧版模型）
+> **默认模型**（Gemini 与 Evolink 使用相同模型名，OpenRouter 加 `google/` 前缀）：
+> - 文本：`gemini-3.8-flash`。想省钱可选 `gemini-3.1-flash-lite`，文本费用约为前者的 1/4，检索质量略低。不建议用 `gemini-3.5-flash-lite`：实测它当 Critic 时几乎总是回复“无需修改”，评审修正不起作用。
+> - 生图：`gemini-nano-banana-2.1`（Nano Banana 2.1）。连同思考 token，实测 1K 每张约 $0.05、2K 每张约 $0.07，单张约 30–40 秒。1K 下小字可能发糊，标签较多的图建议用 2K。追求画质可选 `gemini-3-pro-image`（Nano Banana Pro，1K/2K 每张 $0.134）。
+> - 费用参考：标准流程、2K、3 轮 Critic 时，每个候选约 $0.4、约 5 分钟。2027 年起 `gemini-3.8-flash` 标价翻倍。
 >
-> 根据内部测试，GPT Image 2 的效果不如 Banana Pro。我们推测原因在于：GPT Image 的优势集中在文字稳定性和 zero-shot 生图能力，而 PaperBanana 的本质是尽力稳定文字和风格一致性——二者优势重叠，互补性不足。因此，在 PaperBanana 流水线中，Banana Pro 仍是最优选择，GPT Image 2 次之。
+> 此前的内部测试中，GPT Image 2 的效果不如 Banana Pro。我们推测原因在于：GPT Image 的优势集中在文字稳定性和 zero-shot 生图能力，而 PaperBanana 的本质是尽力稳定文字和风格一致性——二者优势重叠，互补性不足。
 
 您也可以直接在 GUI 中可视化配置，API Key 会自动存储到本地：
 

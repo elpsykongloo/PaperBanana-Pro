@@ -62,11 +62,10 @@ model_config = load_model_config(REPO_ROOT)
 runtime_event_hook: Optional[Callable[[dict[str, Any]], None]] = None
 runtime_status_hook: Optional[Callable[[str], None]] = None
 
-DEFAULT_GEMINI_IMAGE_FALLBACK_MODEL = "gemini-3.1-flash-image-preview"
-DEFAULT_GEMINI_TEXT_FALLBACK_MODELS = (
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3-flash-preview",
-)
+DEFAULT_GEMINI_IMAGE_FALLBACK_MODEL = "gemini-nano-banana-2.1"
+# 文本兜底：Pro 或 Flash-Lite 主模型失败时改用 3.1 Flash-Lite，不悄悄换成更贵的 Flash 模型。
+# 不用 3.5 Flash-Lite：实测它当 Critic 时几乎总是回复“无需修改”，评审轮次形同关闭。
+DEFAULT_GEMINI_TEXT_FALLBACK_MODELS = ("gemini-3.1-flash-lite",)
 
 evolink_base_url = get_config_val(
     model_config,
@@ -715,7 +714,7 @@ def _convert_to_gemini_parts(contents):
 def _is_gemini_image_request(model_name: str, config: Any) -> bool:
     """判断当前是否为图像生成请求。"""
     lower_model = (model_name or "").lower()
-    if "image" in lower_model or "nanoviz" in lower_model:
+    if "image" in lower_model or "nanoviz" in lower_model or "nano-banana" in lower_model:
         return True
 
     modalities = getattr(config, "response_modalities", None)
@@ -753,7 +752,8 @@ def _build_gemini_model_ladder(
             for fallback_model in DEFAULT_GEMINI_TEXT_FALLBACK_MODELS:
                 _push(fallback_model)
         elif "flash-lite" in lower_model:
-            _push("gemini-3-flash-preview")
+            for fallback_model in DEFAULT_GEMINI_TEXT_FALLBACK_MODELS:
+                _push(fallback_model)
 
     return ladder
 
@@ -826,11 +826,11 @@ def _stage_retry_budget(
     is_primary = lower_stage == lower_primary
 
     if is_image_request:
-        if "pro-image" in lower_stage:
+        if "pro-image" in lower_stage or "nano-banana-pro" in lower_stage:
             if cycle_index == 0:
                 return min(2, safe_requested)
             return 1 if cycle_index % 4 == 0 else 0
-        if "flash-image" in lower_stage:
+        if "flash-image" in lower_stage or "nano-banana" in lower_stage:
             return min(max(2, safe_requested), 4)
         return min(max(2, safe_requested), 3)
 
@@ -840,7 +840,7 @@ def _stage_retry_budget(
         return 1 if cycle_index % 3 == 0 else 0
     if "flash-lite" in lower_stage:
         return min(max(2, safe_requested), 3)
-    if "flash-preview" in lower_stage:
+    if "flash" in lower_stage:
         return min(max(2, safe_requested + 1), 4)
 
     if is_primary:
@@ -1012,7 +1012,9 @@ def _get_gemini_request_timeout_seconds(is_image_request: bool) -> float:
             return max(float(env_val), 10.0)
         except ValueError:
             pass
-    return 45.0
+    # 思考模型（如 gemini-3.8-flash）的 Planner / Critic 请求实测平均约 30 秒，偶有超过 45 秒；
+    # 超时会被当作可重试错误反复重试，上限过低会让长输出一直被截断
+    return 120.0
 
 
 async def call_gemini_with_retry_async(
