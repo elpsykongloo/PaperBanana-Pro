@@ -784,6 +784,12 @@ def _should_retry_gemini_forever(error_text: str) -> bool:
     return any(sig in lower for sig in retry_signals)
 
 
+def _is_gemini_model_not_found_error(error_text: str) -> bool:
+    """模型 ID 不存在或已下线（404 NOT_FOUND）：同一个模型重试没有意义。"""
+    lower = str(error_text or "").lower()
+    return "404" in lower and ("not_found" in lower or "is not found" in lower)
+
+
 def _is_gemini_non_retryable_error(error_text: str) -> bool:
     """Avoid infinite loops on auth/config/safety/input failures."""
     lower = str(error_text or "").lower()
@@ -1161,6 +1167,10 @@ async def call_gemini_with_retry_async(
                     **parsed_meta,
                 }
 
+                if _is_gemini_model_not_found_error(error_text):
+                    # 模型不存在或已下线：不再重试这个模型，交给外层换下一个兜底模型
+                    break
+
                 if attempt_idx < stage_attempts - 1:
                     if _runtime_cancel_requested():
                         raise asyncio.CancelledError()
@@ -1184,10 +1194,13 @@ async def call_gemini_with_retry_async(
         return stage_results[:target_candidate_count], last_error_meta, len(stage_results) >= target_candidate_count
 
     final_error_meta: Dict[str, Any] = {}
+    unavailable_models: set[str] = set()
     cycle_index = 0
 
     while True:
         for ladder_index, stage_model_name in enumerate(model_ladder):
+            if stage_model_name in unavailable_models:
+                continue
             stage_requested_attempts = (
                 int(max_attempts)
                 if stage_model_name == model_name
@@ -1229,6 +1242,20 @@ async def call_gemini_with_retry_async(
             if stage_error_meta:
                 final_error_meta = stage_error_meta
                 error_text = str(stage_error_meta.get("error_text", ""))
+                if _is_gemini_model_not_found_error(error_text):
+                    unavailable_models.add(stage_model_name)
+                    _emit_runtime_event(
+                        level="WARNING",
+                        kind="warning",
+                        source="GenerationUtils",
+                        job_type="generation",
+                        provider="gemini",
+                        model=stage_model_name,
+                        status="fallback",
+                        message=f"Gemini 模型不存在或已下线：{stage_model_name}，改用下一个兜底模型",
+                        details=error_text,
+                    )
+                    continue
                 if _is_gemini_non_retryable_error(error_text):
                     _emit_runtime_event(
                         level="ERROR",
@@ -1253,6 +1280,24 @@ async def call_gemini_with_retry_async(
 
         if _runtime_cancel_requested():
             raise asyncio.CancelledError()
+
+        if model_ladder and all(name in unavailable_models for name in model_ladder):
+            message = f"Gemini 模型不存在或已下线：{', '.join(model_ladder)}。请在设置中更换模型。"
+            _emit_runtime_event(
+                level="ERROR",
+                kind="error",
+                source="GenerationUtils",
+                job_type="generation",
+                provider="gemini",
+                model=model_name,
+                status="failed",
+                error_code=final_error_meta.get("code"),
+                message=message,
+                details=final_error_meta.get("error_text", ""),
+            )
+            _safe_log(f"[Gemini] {message} ({error_context})")
+            result_list.extend(["Error"] * (target_candidate_count - len(result_list)))
+            return result_list
 
         last_error_text = str(final_error_meta.get("error_text", ""))
         if final_error_meta and not _should_retry_gemini_forever(last_error_text):
