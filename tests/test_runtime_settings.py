@@ -67,10 +67,12 @@ class RuntimeSettingsTest(unittest.TestCase):
             (config_dir / "model_config.yaml").write_text(CONFIG_YAML, encoding="utf-8")
             (local_dir / "google_api_key.txt").write_text("local-google-key", encoding="utf-8")
 
-            settings = resolve_runtime_settings(
-                "gemini",
-                base_dir=root,
-            )
+            # 隔离开发机上可能存在的 GOOGLE_API_KEY 环境变量
+            with patch.dict("os.environ", {"GOOGLE_API_KEY": ""}):
+                settings = resolve_runtime_settings(
+                    "gemini",
+                    base_dir=root,
+                )
 
             self.assertEqual(settings.provider, "gemini")
             self.assertEqual(settings.api_key, "local-google-key")
