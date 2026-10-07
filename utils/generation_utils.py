@@ -678,21 +678,37 @@ async def call_evolink_image_with_retry_async(
 # ==================== 原始 Gemini 调用函数（保留兼容性） ====================
 
 def _convert_to_gemini_parts(contents):
-    """将通用内容列表转换为 Gemini 的 Part 对象列表"""
+    """
+    将通用内容列表转换为 Gemini 的 Part 对象列表。
+
+    图片支持两种格式：source 嵌套格式和 image_base64 直接格式（与 Evolink / OpenAI 分支一致）；
+    缺少 MIME 时按文件头识别。
+    """
     from google.genai import types
+    from utils.image_utils import detect_image_mime_from_bytes
+
     gemini_parts = []
     for item in contents:
         if item.get("type") == "text":
             gemini_parts.append(types.Part.from_text(text=item["text"]))
         elif item.get("type") == "image":
-            source = item.get("source", {})
+            source = item.get("source", {}) or {}
             if source.get("type") == "base64":
-                gemini_parts.append(
-                    types.Part.from_bytes(
-                        data=base64.b64decode(source["data"]),
-                        mime_type=source["media_type"],
-                    )
+                data_b64 = source.get("data", "")
+                mime_type = source.get("media_type")
+            else:
+                data_b64 = item.get("image_base64", "")
+                mime_type = item.get("mime_type")
+            if not data_b64:
+                logger.warning("⚠️  Gemini 请求跳过无数据的图片项")
+                continue
+            image_bytes = base64.b64decode(data_b64)
+            gemini_parts.append(
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime_type or detect_image_mime_from_bytes(image_bytes),
                 )
+            )
     return gemini_parts
 
 

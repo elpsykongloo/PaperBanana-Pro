@@ -24,13 +24,25 @@ import base64, io, asyncio
 from PIL import Image
 
 from utils.dataset_paths import get_reference_file_path, resolve_data_asset_path
-from utils import generation_utils
+from utils import generation_utils, image_utils
 from utils.pipeline_state import PipelineState
 from .base_agent import BaseAgent
 
 from utils.log_config import get_logger
 
 logger = get_logger("PlannerAgent")
+
+# diagram 参考样例的方法正文只保留前 2500 字符。小样本实测（16 条）：Planner 输入 token 减少约 60%，
+# 成对盲评质量持平；参考样例的价值主要来自参考图与图注，正文全文只增加成本。
+DIAGRAM_EXAMPLE_CONTENT_CHAR_LIMIT = 2500
+# 参考图缩到长边 1024 像素的 JPEG 再发送（与实验口径一致；原图平均 0.4 MB，10 张会让每次请求多传数 MB）
+REFERENCE_IMAGE_MAX_SIDE = 1024
+
+
+def _truncate_example_content(text: str, limit: int | None) -> str:
+    if not limit or len(text) <= limit:
+        return text
+    return text[:limit] + " …"
 
 
 @lru_cache(maxsize=8)
@@ -51,12 +63,6 @@ def _load_reference_items(
     return {item["id"]: item for item in candidate_pool}
 
 
-@lru_cache(maxsize=1024)
-def _load_reference_image_base64(image_path: str) -> str:
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
-
-
 class PlannerAgent(BaseAgent):
     """Planner Agent to generate images based on user queries"""
 
@@ -71,6 +77,8 @@ class PlannerAgent(BaseAgent):
                 "task_name": "plot",
                 "content_label": "Plot Raw Data",
                 "visual_intent_label": "Visual Intent of the Desired Plot",
+                # plot 样例正文是原始数据，截断会破坏数据结构，保持全文
+                "example_content_char_limit": None,
             }
         else:
             self.system_prompt = DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT
@@ -78,6 +86,7 @@ class PlannerAgent(BaseAgent):
                 "task_name": "diagram",
                 "content_label": "Methodology Section",
                 "visual_intent_label": "Diagram Caption",
+                "example_content_char_limit": DIAGRAM_EXAMPLE_CONTENT_CHAR_LIMIT,
             }
 
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,6 +115,7 @@ class PlannerAgent(BaseAgent):
             item_content = item["content"]
             if isinstance(item_content, (dict, list)):
                 item_content = json.dumps(item_content)
+            item_content = _truncate_example_content(item_content, cfg["example_content_char_limit"])
 
             image_path = resolve_data_asset_path(
                 item.get("path_to_gt_image"),
@@ -126,8 +136,12 @@ class PlannerAgent(BaseAgent):
             user_prompt += f"{cfg['content_label']}: {item_content}\n"
             user_prompt += f"{cfg['visual_intent_label']}: {item['visual_intent']}\nReference {cfg['task_name'].capitalize()}: "
             content_list.append({"type": "text", "text": user_prompt})
-            ref_image_base64 = _load_reference_image_base64(str(image_path))
-            content_list.append({"type": "image", "image_base64": ref_image_base64})
+            ref_image_base64 = image_utils.load_image_as_jpeg_base64(str(image_path), REFERENCE_IMAGE_MAX_SIDE)
+            # 使用 source 嵌套格式：各 provider 的转换函数都支持（Gemini 分支此前会丢弃 image_base64 直接格式）
+            content_list.append({
+                "type": "image",
+                "source": {"type": "base64", "data": ref_image_base64, "media_type": "image/jpeg"},
+            })
 
         user_prompt = ""
         user_prompt += f"Now, based on the following {cfg['content_label'].lower()} and {cfg['visual_intent_label'].lower()}, provide a detailed description for the figure to be generated.\n"
