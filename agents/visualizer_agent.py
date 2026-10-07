@@ -73,7 +73,12 @@ class VisualizerAgent(BaseAgent):
             self.task_config = {
                 "task_name": "diagram",
                 "use_image_generation": True,
-                "prompt_template": "Render an image based on the following detailed description: {desc}\n Note that do not include figure titles in the image. Diagram: ",
+                # 明确禁止把颜色名、风格名、布局指令画成文字（实测这类文字会被生图模型当成标签渲染）
+                "prompt_template": (
+                    "Render an image based on the following detailed description: {desc}\n Note that do not include figure titles in the image. "
+                    "Render only the text labels that belong to the diagram content (such as module names, variables and losses); never render "
+                    "color names, style names, or layout instructions as text. Diagram: "
+                ),
                 "max_output_tokens": 50000,
             }
 
