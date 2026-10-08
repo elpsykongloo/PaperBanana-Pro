@@ -159,6 +159,9 @@ Copy-Item configs\model_config.template.yaml configs\model_config.yaml
 
 <img src="assets/ui_api_key_config.png" alt="API Key 配置" width="280">
 
+> [!WARNING]
+> GUI 面向单人本地使用，**不要公开部署给多人共用**：在 GUI 中填入的 API Key 会保存在本机，并成为之后所有会话的默认 Key，其他访问者会直接用你的 Key 生成并计费。
+
 ### 4. 启动
 
 ```bash
