@@ -111,7 +111,7 @@ class VisualizerAgent(BaseAgent):
                 critic_suggestions_key = state.critic_suggestions_key(round_idx)
                 critic_suggestions = data.get(critic_suggestions_key, "")
 
-                if critic_suggestions.strip() == "No changes needed." and round_idx > 0:
+                if str(critic_suggestions or "").strip() == "No changes needed." and round_idx > 0:
                     prev_desc_key = state.critic_desc_key(round_idx - 1)
                     prev_base64_key = state.image_key(prev_desc_key)
                     prev_mime_key = state.mime_key(prev_desc_key)

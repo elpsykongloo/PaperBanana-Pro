@@ -30,6 +30,26 @@ from utils.log_config import get_logger
 
 logger = get_logger("CriticAgent")
 
+NO_CHANGES_NEEDED = "No changes needed."
+
+
+def coerce_critic_text(value: Any) -> str:
+    """把 Critic JSON 里的字段统一成字符串。
+
+    模型偶尔把意见返回成列表、null 或 NaN（上游 PaperBanana #58），直接调用 .strip() 会抛异常，整个候选作废。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float) and value != value:  # NaN
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "\n".join(text for text in (coerce_critic_text(v).strip() for v in value) if text)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
 
 class CriticAgent(BaseAgent):
     """Critic Agent to critique and refine figure descriptions"""
@@ -156,8 +176,13 @@ class CriticAgent(BaseAgent):
             revised_description = detailed_description
             data[status_key] = "parse_error"
         else:
-            critic_suggestions = eval_result.get("critic_suggestions", "No changes needed.")
-            revised_description = eval_result.get("revised_description", "No changes needed.")
+            critic_suggestions = coerce_critic_text(eval_result.get("critic_suggestions")).strip()
+            revised_description = coerce_critic_text(eval_result.get("revised_description")).strip()
+            if not revised_description:
+                # 没有给出修订描述：沿用上一版；连意见也没有时视为无需修改，避免用同一描述重复出图
+                revised_description = NO_CHANGES_NEEDED
+                if not critic_suggestions:
+                    critic_suggestions = NO_CHANGES_NEEDED
             data[status_key] = "ok"
 
         data[state.critic_suggestions_key(round_idx)] = critic_suggestions
@@ -165,7 +190,7 @@ class CriticAgent(BaseAgent):
 
         if parse_failed:
             logger.warning(f"⚠️  round={round_idx}: Critic 响应解析失败，保留上一版描述")
-        elif revised_description.strip() == "No changes needed.":
+        elif revised_description == NO_CHANGES_NEEDED:
             data[state.critic_desc_key(round_idx)] = detailed_description
             logger.info(f"✅ round={round_idx}: 无需修改")
         else:

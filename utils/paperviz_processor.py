@@ -333,7 +333,7 @@ class PaperVizProcessor:
                 )
                 break
              
-            if critic_suggestions.strip() == "No changes needed.":
+            if str(critic_suggestions or "").strip() == "No changes needed.":
                 logger.info(f"✅ Critic 第 {round_idx} 轮无需修改，停止迭代")
                 self._emit_status(
                     status_callback,
