@@ -1,0 +1,1413 @@
+{
+ "meta": {
+  "description": "PaperBananaBench diagram 测试集 16 条（4 个类别各 4 条）。保存了 Planner 描述与修正版 Stylist 描述（V2），可用来复测新的生图模型或生图提示。",
+  "created": "2026-10-07",
+  "judge_model": "gemini-3.1-pro-preview（成对盲评，两种顺序都胜才算胜；同时给评审看原图）",
+  "leak_model": "gemini-3-flash-preview",
+  "variants": {
+   "V0": "Planner + 原 Stylist + 原生图提示",
+   "V1": "只用 Planner 描述",
+   "V2": "修正版 Stylist + 防文字生图提示（现行）",
+   "V3": "先定结构的 Planner",
+   "V4": "示例正文截断到 2,500 字符（现行）",
+   "nb2_1k": "V2 描述，Nano Banana 2（gemini-3.1-flash-image-preview）1K",
+   "nb21_1k": "V2 描述，gemini-nano-banana-2.1 1K",
+   "nb21_2k": "V2 描述，gemini-nano-banana-2.1 2K"
+  },
+  "notes": "V0–V4 的文本模型为 gemini-3-flash-preview，生图为 Nano Banana 2 1K。图片未入库，需要时按描述重新生成。"
+ },
+ "items": [
+  {
+   "id": "test_222",
+   "category": "agent_reasoning",
+   "refs": [
+    "ref_71",
+    "ref_144",
+    "ref_280",
+    "ref_51",
+    "ref_193",
+    "ref_157",
+    "ref_166",
+    "ref_26",
+    "ref_139",
+    "ref_140"
+   ],
+   "descriptions": {
+    "planner": "The figure illustrates the SYMPHONY system, a multi-agent planning framework that leverages a heterogeneous pool of Large Language Models (LLMs) to enhance Monte Carlo Tree Search (MCTS). The diagram is organized into three main functional areas, set against a clean white background with a logical flow from agent selection to tree search and collective learning.\n\n### 1. Heterogeneous Agent Pool & UCB Scheduling (Left Section)\n*   **Agent Pool:** At the top left, a box labeled \"Heterogeneous Agent Pool\" contains several distinct AI icons (represented as small colorful robot or brain silhouettes) labeled $M_1, M_2, \\dots, M_n$. These represent different models (e.g., Llama-3, GPT-4, Mistral).\n*   **UCB Scheduler:** Below the pool, a central \"UCB Scheduler\" module is depicted. It uses an icon of a mathematical gear or a balancing scale. \n*   **Dynamic Dispatch:** Thick, colored arrows (blue and orange) originate from the Scheduler and point toward the search process, indicating that the scheduler dynamically selects specific agents for different tasks based on the UCB formula (shown as a small mathematical callout: $UCB(M_i) = \\bar{Q} + \\alpha \\sqrt{\\ln N / N_i}$).\n\n### 2. MCTS Planning & Entropy-Modulated Evaluation (Center Section)\n*   **MCTS Search Tree:** The middle of the figure features a structured search tree. \n    *   **Selection & Expansion:** A blue-rimmed node is highlighted as the current \"Frontier Node.\" A selected agent icon ($M_i$) is shown performing \"Expansion,\" generating several candidate action branches (light blue arrows) leading to new child nodes.\n    *   **Entropy-Modulated Evaluation (EMCS):** One specific leaf node is being evaluated by a different agent ($M_j$). A calculation bubble next to this node illustrates the **EMCS** process: it shows two inputs, **Value Estimate ($Z$)** and **Confidence Score ($C$)**, feeding into a formula box $R = Z \\cdot (1 - E(C))$. The output is a \"Modulated Reward ($R$)\" used for backpropagation.\n*   **Visual Styling:** Nodes are represented as solid circles. Successful paths are indicated by green solid edges, while unexplored or less promising paths are faint gray.\n\n### 3. Pool-wise Memory Sharing & Reflection (Right/Bottom Section)\n*   **Failure & Reflection:** A specific branch in the search tree is marked with a red dashed line and an \"X\" icon, labeled \"Unsuccessful Trajectory.\" \n*   **Reflection Agent:** An agent icon is shown observing this failed path and generating a \"Reflection\" (a text bubble icon containing keywords like \"Failure Summary\" or \"Correction\").\n*   **Shared Memory (FIFO Buffer):** This reflection is sent to a central \"Shared Memory\" box (represented as a stack of document icons or a database). \n*   **Feedback Loop:** A broad, dashed return arrow flows from the Shared Memory back to the \"Heterogeneous Agent Pool\" on the left. This visualizes the \"Pool-wise Memory Sharing\" protocol, where agents integrate shared reflections into their prompts for future reasoning iterations.\n\n### Formatting Details:\n*   **Colors:** The framework uses a palette of professional pastels: light blue for agents, soft green for successful planning, and pale orange for scheduling modules.\n*   **Lines:** Solid lines represent the execution flow (Expansion, Evaluation), while dashed lines represent the reflective learning loop.\n*   **Legend:** A small legend at the bottom defines the symbols: agent icons, search nodes, value/confidence scores, and shared memory blocks.",
+    "stylist_v2": "The figure illustrates the SYMPHONY system, a multi-agent planning framework, organized into three functional zones set against a clean white background with a left-to-right narrative flow.\n\n### 1. Heterogeneous Agent Pool & UCB Scheduling (Left Section)\n*   **Zone Styling:** This section is encapsulated in a large rounded rectangle with a very pale blue fill (`#E6F3FF`) and a subtle grey dashed border.\n*   **Agent Pool:** At the top left, a container labeled \"**Heterogeneous Agent Pool**\" (Bold Sans-Serif) contains a horizontal row of four distinct 2D vector robot avatars. These avatars are styled in soft professional colors (Teal, Coral, Lavender, and Slate). Each is labeled below with its model variable: \"$M_1$\", \"$M_2$\", \"$\\dots$\", \"$M_n$\" (Serif Italic).\n*   **UCB Scheduler:** Below the pool, a central module labeled \"**UCB Scheduler**\" (Sans-Serif) is represented as a rounded rectangle with a pale orange fill (`#FFF3E0`) and a grey border (1pt). It features a small grey gear icon. \n*   **Dynamic Dispatch:** Thick orthogonal arrows (right-angle turns) in medium-saturation blue (`#42A5F5`) and orange (`#FFA726`) originate from the Scheduler and point toward the center section. A small white callout bubble near the arrows contains the mathematical expression: \"$UCB(M_i) = \\bar{Q} + \\alpha \\sqrt{\\ln N / N_i}$\" (Serif Italic).\n\n### 2. MCTS Planning & Entropy-Modulated Evaluation (Center Section)\n*   **Zone Styling:** The center area is defined by a light mint green background (`#E0F2F1`).\n*   **MCTS Search Tree:** A hierarchical search tree is centered here.\n    *   **Nodes and Edges:** Search nodes are 12pt diameter solid circles. The primary path consists of dark grey solid edges, while unexplored branches are represented by light grey lines (`#BDBDBD`).\n    *   **Selection & Expansion:** One node, labeled \"**Frontier Node**\" (Sans-Serif), is highlighted with a 2pt blue rim. A small robot icon labeled \"$M_i$\" is positioned next to it, with several light blue orthogonal arrows labeled \"**Expansion**\" branching out to new child nodes.\n    *   **Entropy-Modulated Evaluation (EMCS):** A leaf node on a separate branch is being evaluated by a robot icon labeled \"$M_j$\". A semi-transparent white calculation box (rounded corners, 8px radius) next to this node is labeled \"**EMCS**\". It shows two inputs, \"**Value Estimate ($Z$)**\" and \"**Confidence Score ($C$)**\" (Serif Italic), feeding into a central formula: \"$R = Z \\cdot (1 - E(C))$\". A solid green arrow points away from the box labeled \"**Modulated Reward ($R$)**\".\n*   **Visual Highlights:** A specific sequence of nodes is connected by thick green edges to signify a successful trajectory.\n\n### 3. Pool-wise Memory Sharing & Reflection (Right/Bottom Section)\n*   **Zone Styling:** This area is shaded in a pale lavender background (`#F3E5F5`).\n*   **Failure & Reflection:** A branch in the search tree is highlighted with a red dashed line and a small red \"X\" icon, labeled \"**Unsuccessful Trajectory**\" (Sans-Serif).\n*   **Reflection Agent:** A robot icon is positioned observing the \"X\". A white chat bubble icon emerges from the robot containing the text: \"**Failure Summary**\" and \"**Correction**\".\n*   **Shared Memory (FIFO Buffer):** The reflection content is directed via a solid lavender arrow to a vertical cylinder icon (`#CFD8DC` grey) labeled \"**Shared Memory (FIFO Buffer)**\".\n*   **Feedback Loop:** A broad, curved dashed arrow in soft purple (`#9575CD`) flows from the Shared Memory cylinder back to the \"**Heterogeneous Agent Pool**\" on the far left. This path is labeled \"**Pool-wise Memory Sharing**\" in bold Sans-Serif.\n\n### Formatting Specifications:\n*   **Typography:** All descriptive labels (e.g., \"Expansion\", \"Shared Memory\") use a clean Sans-Serif font (Arial or Roboto). All variables and formulas (e.g., \"$M_i$\", \"$Q$\", \"$R$\") use Serif Italic.\n*   **Lines:** Standard execution flows use solid lines (1.5pt). The reflective learning loop and logical scopes use dashed lines (1.5pt).\n*   **Shapes:** Processes use rounded rectangles (corner radius 8px). Memory structures use 3D cylinders.\n*   **Legend:** A small legend box in the bottom right corner defines the symbols: \"Agent Icon\" (robot avatar), \"Search Node\" (circle), \"Value/Confidence\" (math variables), and \"Shared Memory\" (cylinder)."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "tie",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V3_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V4_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "loss",
+     "faithfulness": "tie",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 1,
+    "V2": 0,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_265",
+   "category": "agent_reasoning",
+   "refs": [
+    "ref_134",
+    "ref_127",
+    "ref_161",
+    "ref_100",
+    "ref_181",
+    "ref_140",
+    "ref_289",
+    "ref_81",
+    "ref_129",
+    "ref_87"
+   ],
+   "descriptions": {
+    "planner": "The proposed illustrative figure for the **TrajMamba** framework is a comprehensive system diagram divided into two horizontal or slightly overlapping panels, labeled **(a) Travel Purpose-aware Pre-training** and **(b) Knowledge Distillation Pre-training**. The overall design should use a clean, professional aesthetic with a pure white background, utilizing soft pastel color coding (e.g., light blue for trajectory encoders, light purple for textual encoders, and soft yellow for the mask generator) to distinguish functional modules.\n\n### (a) Travel Purpose-aware Pre-training\nThis section occupies the left or upper half of the figure, illustrating the semantic alignment process.\n*   **Input Trajectory ($\\tau$):** Represented as a sequence of points connected by a path. Three distinct feature streams emerge from it: **GPS Features** (coordinates, time delta), **Road Features** (Road ID, hour), and **POI Information** (closest POI IDs).\n*   **Textual Encoders:** Two parallel branches labeled **Road View** and **POI View**.\n    *   The **Road View** branch shows a sequence of road segment embeddings being processed by a **Mamba2 block** to produce a road-view embedding ($z_{\\tau}^{Road}$).\n    *   The **POI View** branch shows POI embeddings (with a small icon representing a map marker) being processed by a separate **Mamba2 block** to produce a POI-view embedding ($z_{\\tau}^{POI}$).\n*   **Traj-Mamba Encoder:** Positioned centrally, this block takes the original trajectory as input and generates the trajectory embedding ($z_{\\tau}$).\n*   **Contrastive Learning Hub:** A central node where arrows from $z_{\\tau}$, $z_{\\tau}^{Road}$, and $z_{\\tau}^{POI}$ converge. It is labeled with \"**Contrastive Learning (InfoNCE)**\", symbolizing the alignment of movement patterns with high-level travel purposes. Double-ended dashed arrows should indicate the \"push-pull\" mechanism of the loss function.\n\n### (b) Knowledge Distillation Pre-training\nThis section occupies the right or lower half, illustrating the trajectory compression and distillation pipeline.\n*   **Teacher-Student Paradigm:**\n    *   **Teacher Model (Top Branch):** The **Traj-Mamba Encoder** is shown with a small \"blue padlock\" icon to indicate that its weights are fixed. It processes the **Full Trajectory ($\\tau$)** to generate a full-trajectory embedding ($z$).\n    *   **Student Model (Bottom Branch):** The input trajectory first passes through a **Preprocessing** block (filtering stop points).\n*   **Mask Generator:** A specialized module containing a **Lightweight Mamba Block** and a **Sigmoid/Softplus** activation. It outputs a **Point-specific Mask ($m$)**, visualized as a sequence of binary-like weights (0 or 1) above the trajectory points.\n*   **Compressed Trajectory ($\\tilde{\\tau}$):** Represented as a sparse version of the original trajectory, where redundant points are greyed out or removed based on the mask.\n*   **Student Encoder:** A duplicate of the Traj-Mamba Encoder (initialized from the teacher) that processes $\\tilde{\\tau}$ to produce the **Compressed Representation ($\\tilde{z}_{\\tau}$)**.\n*   **Distillation Alignment:** A large vertical double-ended arrow connects the Teacher output ($z$) and the Student output ($\\tilde{z}_{\\tau}$), labeled with \"**Knowledge Distillation (MEC Loss)**\". \n\n### Structural Details and Aesthetics\n*   **Icons:** Use simple, flat icons for \"Roads\" (a small street segment), \"POIs\" (a map pin), and \"GPS\" (a satellite or signal icon).\n*   **Arrows:** Solid arrows represent the primary data flow; dashed arrows represent loss functions or alignment constraints.\n*   **Traj-Mamba Block (Optional Callout):** A small inset could show the internal structure of the Traj-Mamba block: a dual-branch system with **GPS-SSM** and **Road-SSM**, connected by a **Dot-product Gating** mechanism to show the interaction between spatiotemporal and geographical views.\n*   **Typography:** Use a clean sans-serif font (like Arial or Helvetica). Mathematical symbols ($z$, $\\tau$, $L_{\\mathbb{T}}$) should be rendered in LaTeX style for academic consistency.\n*   **Legend:** A small legend at the bottom corner can explain the \"Fixed Weights\" vs. \"Learnable Weights\" and \"Alignment Loss\" symbols.",
+    "stylist_v2": "The illustrative figure for the **TrajMamba** framework is a comprehensive system diagram organized into two distinct horizontal panels, labeled **(a) Travel Purpose-aware Pre-training** and **(b) Knowledge Distillation Pre-training**. The design utilizes a clean, professional aesthetic with a pure white background and subtle \"zone\" background fills to distinguish the two stages.\n\n### (a) Travel Purpose-aware Pre-training\nThis panel, situated in the upper half, uses a very light, desaturated **Pale Blue** (#E6F3FF) background fill with a corner radius of 10px to encapsulate the semantic alignment logic.\n*   **Input Trajectory ($\\tau$):** Visualized as a sequence of points on a 2D plane connected by a solid line. Three feature streams emerge from it: **\"GPS Features\"** (coordinates, $\\Delta t$), **\"Road Features\"** (Road ID, hour), and **\"POI Information\"** (POI IDs), each represented as a **3D Cuboid** stack to imply feature depth.\n*   **Textual Encoders:** Two parallel branches grouped in a **Pale Lavender** (#F3E5F5) container.\n    *   **Road View:** A sequence of road segment embeddings enters a **Rounded Rectangle** block labeled **\"Mamba2 block\"** (fill: #9B59B6, text: white), outputting the road-view embedding ($z_{\\tau}^{Road}$) shown as a small flat vector.\n    *   **POI View:** POI embeddings, marked with a small flat **Map Pin icon**, enter a second **\"Mamba2 block\"** to produce the POI-view embedding ($z_{\\tau}^{POI}$).\n*   **Traj-Mamba Encoder:** Centrally positioned as a large **Rounded Rectangle** (fill: #4A90E2, text: white). It processes the original trajectory $\\tau$ to generate the trajectory embedding ($z_{\\tau}$).\n*   **Contrastive Learning Hub:** A central circular node labeled **\"Contrastive Learning (InfoNCE)\"**. Solid **Orthogonal Arrows** flow from $z_{\\tau}$, $z_{\\tau}^{Road}$, and $z_{\\tau}^{POI}$ into this hub. Double-ended **Dashed Curved Arrows** (#666666) circulate between the three embeddings to symbolize the \"push-pull\" alignment of movement patterns with high-level purposes.\n\n### (b) Knowledge Distillation Pre-training\nThis panel, situated in the lower half, uses a very light **Mint/Sage** (#E0F2F1) background fill.\n*   **Teacher-Student Paradigm:**\n    *   **Teacher Model (Top):** A version of the **\"Traj-Mamba Encoder\"** rendered in a desaturated **Cool Grey** (#B0BEC5). A small **\"Padlock\" icon** (🔒) is placed in the corner to indicate frozen weights. It processes the **\"Full Trajectory ($\\tau$)\"** to generate the embedding $z$.\n    *   **Student Model (Bottom):** The input first passes through a **\"Preprocessing\"** block (rounded rectangle, #FFCC80). \n*   **Mask Generator:** A specialized module (fill: #F1C40F, soft yellow) containing a **\"Lightweight Mamba Block\"** and a circle with a **\"Sigmoid\"** symbol. It outputs the **\"Point-specific Mask ($m$)\"**, visualized as a horizontal grid of square cells, where some are filled (1) and others are empty (0).\n*   **Compressed Trajectory ($\\tilde{\\tau}$):** A sparse version of the original trajectory where redundant points are represented as semi-transparent grey dots.\n*   **Student Encoder:** A **Rounded Rectangle** identical in style to the teacher (fill: #4A90E2) but without the padlock, processing $\\tilde{\\tau}$ to produce the **\"Compressed Representation ($\\tilde{z}_{\\tau}$)\"**.\n*   **Distillation Alignment:** A prominent vertical double-ended **Dashed Arrow** connects the Teacher output $z$ and the Student output $\\tilde{z}_{\\tau}$, labeled with **\"Knowledge Distillation (MEC Loss)\"**.\n\n### Structural Details and Aesthetics\n*   **Icons:** Use minimalist, flat icons: a \"street segment\" for Roads, a \"satellite\" for GPS, and a \"map pin\" for POIs.\n*   **Arrows:** Main data flow uses solid charcoal lines (#333333) with **Orthogonal (Right-Angle)** turns. Loss constraints and gradient-related alignments use **Dashed Bezier (Curved)** lines.\n*   **Traj-Mamba Block Callout:** A small dashed-line breakout box shows the internal logic: two horizontal paths for **\"GPS-SSM\"** and **\"Road-SSM\"**, with a circular **\"$\\otimes$\" (Dot-product Gating)** operator connecting them to represent the interaction between views.\n*   **Typography:** All labels (e.g., **\"Road View\"**, **\"Mask Generator\"**) use a bold **Sans-Serif** font (Helvetica/Arial). All mathematical variables ($\\tau$, $z_{\\tau}$, $m$, $z$, $\\tilde{z}_{\\tau}$, $L_{\\mathbb{T}}$) are rendered in **Serif Italic (LaTeX style)**.\n*   **Legend:** A small floating box in the bottom right explains: \"🔒 Frozen Weights\", \"🔥 Learnable Weights\", and \"--- Alignment Loss\"."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "tie"
+    },
+    "V2_vs_V0": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "loss",
+     "aesthetics": "tie"
+    },
+    "V2_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V3_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V4_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_224",
+   "category": "agent_reasoning",
+   "refs": [
+    "ref_253",
+    "ref_61",
+    "ref_263",
+    "ref_278",
+    "ref_110",
+    "ref_71",
+    "ref_51",
+    "ref_238",
+    "ref_196",
+    "ref_102"
+   ],
+   "descriptions": {
+    "planner": "This figure illustrates one complete cycle of the **LOOKAHEAD REASONING** process, specifically focusing on the asynchronous step-level speculative generation. The diagram is organized horizontally against a clean white background, using a combination of flowcharts and a timeline to demonstrate the interaction between a **Draft Model ($q$)** and a **Target Model ($p$)**.\n\n### 1. Overall Layout and Components\nThe figure is divided into three primary horizontal tracks:\n*   **Top Track (Drafting):** Features a **Rabbit icon** (representing the fast Draft Model $q$). It shows a sequential chain of draft reasoning steps.\n*   **Middle Track (Verification & Target):** Features a **Turtle icon** (representing the high-capacity Target Model $p$). It displays the target model's parallel/asynchronous generation of steps.\n*   **Bottom Track (Output & Timeline):** Summarizes the final accepted sequence and visualizes the latency comparison.\n\n### 2. Detailed Elements and Semantic Connections\n*   **Input Stage:** On the far left, a rounded rectangle labeled **\"Input Prefix $x_{1:t}$\"** serves as the starting point.\n*   **Draft Step Generation (Top):**\n    *   Three rounded rectangles in **light pastel blue** represent the draft steps: **$\\hat{s}_1$**, **$\\hat{s}_2$**, and **$\\hat{s}_3$**.\n    *   Solid arrows connect them sequentially, indicating that $\\hat{s}_2$ is conditioned on $\\hat{s}_1$, and so on.\n    *   Each step is annotated with a small time bracket labeled **\"$t$\"**, representing the low latency of the draft model.\n*   **Target Step Generation (Middle):**\n    *   Below the draft chain, three larger rounded rectangles in **light pastel green** represent the target steps: **$s_1$**, **$s_2$**, and **$s_3$**.\n    *   **Asynchronous Flow:** Diagonal dashed arrows originate from the end of each draft step (e.g., from the end of $\\hat{s}_1$) and point down to the start of the corresponding target step (e.g., $s_1$), illustrating that the target model starts as soon as the specific draft prefix is available.\n    *   Each target step is annotated with a long time bracket labeled **\"$T$\"**, representing the higher latency of the base model.\n*   **Semantic Verification:**\n    *   Vertical dashed lines with a **magnifying glass icon** or a mathematical **\"$\\approx$\" symbol** connect each draft step $\\hat{s}_j$ to its target counterpart $s_j$.\n    *   **Logic Indicators:** \n        *   A **green checkmark** is placed between $\\hat{s}_1$ and $s_1$ (indicating $V(s_1, \\hat{s}_1) = \\text{True}$).\n        *   A **green checkmark** is placed between $\\hat{s}_2$ and $s_2$ (indicating $V(s_2, \\hat{s}_2) = \\text{True}$).\n        *   A **red \"X\" mark** is placed between $\\hat{s}_3$ and $s_3$ (indicating $V(s_3, \\hat{s}_3) = \\text{False}$).\n\n### 3. Output and Speedup Visualization\n*   **Final Output Sequence:** At the bottom right, a container box labeled **\"Output Sequence\"** shows the combination: **$[\\hat{s}_1, \\hat{s}_2, s_3]$**. The first two are blue (drafts) and the last is green (target correction), clearly showing the \"verified drafts + decisive target\" logic from Algorithm 1.\n*   **Latency Comparison (Timeline):**\n    *   A comparative bar chart at the bottom shows two timelines.\n    *   **Traditional (Sequential):** A long bar consisting of three \"$T$\" segments ($3T$ total).\n    *   **LOOKAHEAD REASONING:** A much shorter bar showing the overlapping execution. It is marked as **$2t + T$**, where $2t$ represents the time taken to produce the first two draft steps before the final target step $s_3$ completes.\n\n### 4. Style and Formatting\n*   **Colors:** Draft steps use **#E3F2FD (Light Blue)**; Target steps use **#E8F5E9 (Light Green)**; Semantic verifiers use **#FFF3E0 (Light Orange)**.\n*   **Lines:** Thick, dark grey lines for model boundaries and solid arrows (1.5pt). Thin dashed lines for dependencies and comparisons.\n*   **Fonts:** Clear sans-serif font (e.g., Arial or Helvetica). Mathematical symbols ($s_j, \\hat{s}_j, \\gamma$) are rendered in LaTeX-style italic script.\n*   **Icons:** Simple, high-contrast vector icons for the Rabbit, Turtle, and Verifier.",
+    "stylist_v2": "This figure illustrates one complete cycle of the **LOOKAHEAD REASONING** process, specifically focusing on the asynchronous step-level speculative generation. The diagram is organized horizontally from left to right against a clean white background, utilizing a three-tier \"swimlane\" layout to demonstrate the interaction between models.\n\n### 1. Overall Layout and Background\nThe figure is organized into three horizontal zones. The top zone is designated for the drafting process, the middle for verification, and the bottom for the output timeline. Each zone is subtly demarcated by a very light background fill:\n*   **Drafting Zone:** A faint pale blue strip (`#F0F7FF`).\n*   **Verification Zone:** A faint pale mint strip (`#F2FAF4`).\n*   **Timeline Zone:** A clean white background.\n\n### 2. Component Styling and Icons\n*   **Nodes:** All process steps are represented by rounded rectangles (corner radius 8px) with a thin (1pt) border.\n*   **Arrows:** \n    *   Main data flow uses solid charcoal grey (`#333333`) arrows.\n    *   Asynchronous dependencies use curved dashed lines in a medium blue (`#42A5F5`).\n    *   Verification links use thin vertical dashed lines in a soft orange-grey (`#B0BEC5`).\n*   **Icons:** \n    *   A minimalist vector **Rabbit icon** identifies the \"Draft Model ($q$)\".\n    *   A minimalist vector **Turtle icon** identifies the \"Target Model ($p$)\".\n    *   A small **magnifying glass icon** is placed alongside the verification logic.\n*   **Typography:** Labels use a bold Sans-Serif font (e.g., Arial). Mathematical variables such as \"$x_{1:t}$\", \"$s_j$\", \"$\\hat{s}_j$\", \"$q$\", and \"$p$\" are rendered in italicized Serif (LaTeX style).\n\n### 3. Detailed Step-by-Step Flow\n*   **Input Stage:** On the far left, a rounded rectangle with a light grey fill (`#ECEFF1`) and a charcoal border contains the text \"Input Prefix $x_{1:t}$\".\n*   **Draft Step Generation (Top Track):**\n    *   Three rounded rectangles with a pale blue fill (`#E6F3FF`) and a blue border represent the draft steps: \"$\\hat{s}_1$\", \"$\\hat{s}_2$\", and \"$\\hat{s}_3$\".\n    *   Solid horizontal arrows connect these steps sequentially. \n    *   Each step is topped with a thin bracket labeled \"$t$\" to denote draft latency.\n*   **Target Step Generation (Middle Track):**\n    *   Three larger rounded rectangles with a pale green fill (`#E8F5E9`) and a green border represent the target steps: \"$s_1$\", \"$s_2$\", and \"$s_3$\".\n    *   **Asynchronous Flow:** Curved dashed blue arrows originate from the end of each \"$\\hat{s}_j$\" and point to the start of the corresponding \"$s_j$\". This illustrates that \"$s_j$\" begins as soon as the draft prefix is ready.\n    *   Each target step is underlaid with a long bracket labeled \"$T$\" to denote high latency.\n*   **Semantic Verification Logic:**\n    *   At the vertical junctions between \"$\\hat{s}_j$\" and \"$s_j$\":\n        *   A green circle containing a white checkmark icon is placed between \"$\\hat{s}_1$\" and \"$s_1$\", labeled \"$V(s_1, \\hat{s}_1) = \\text{True}$\".\n        *   A green circle containing a white checkmark icon is placed between \"$\\hat{s}_2$\" and \"$s_2$\", labeled \"$V(s_2, \\hat{s}_2) = \\text{True}$\".\n        *   A red circle containing a white \"X\" icon is placed between \"$\\hat{s}_3$\" and \"$s_3$\", labeled \"$V(s_3, \\hat{s}_3) = \\text{False}$\".\n\n### 4. Output and Latency Visualization\n*   **Final Output Sequence:** At the bottom right, a container box with a dashed border labeled \"Output Sequence\" displays a combined sequence: \"$[\\hat{s}_1, \\hat{s}_2, s_3]$\". The first two elements are colored pale blue (`#E6F3FF`) and the final element is colored pale green (`#E8F5E9`).\n*   **Latency Comparison (Timeline):** \n    *   At the bottom, two horizontal bar charts compare execution time.\n    *   **\"Traditional (Sequential)\":** A single long bar divided into three segments of equal width, each colored light grey (`#CFD8DC`) and labeled \"$T$\". The total length is labeled \"$3T$\".\n    *   **\"LOOKAHEAD REASONING\":** A shorter bar illustrating overlapping time. It consists of two small blue segments (each labeled \"$t$\") followed by one long green segment (labeled \"$T$\"). The total span is labeled \"$2t + T$\". An arrow with the text \"Speedup\" points from the longer bar to the shorter bar."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "V3_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V4_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    }
+   },
+   "leak_counts": {
+    "V0": 2,
+    "V1": 0,
+    "V2": 1,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 1
+   }
+  },
+  {
+   "id": "test_245",
+   "category": "agent_reasoning",
+   "refs": [
+    "ref_61",
+    "ref_166",
+    "ref_21",
+    "ref_116",
+    "ref_263",
+    "ref_27",
+    "ref_51",
+    "ref_208",
+    "ref_75",
+    "ref_159"
+   ],
+   "descriptions": {
+    "planner": "This figure provides a conceptual overview of the **SpecEM** framework, organized into three primary functional zones: the **Drafting Stage**, the **Verification Stage**, and the **Online Feedback Mechanism**, arranged in a cyclic process flow to represent the iterative nature of the ensemble generation.\n\n### 1. Overall Layout and Style\n*   **Background:** The figure is set against a clean, pure white background.\n*   **Color Palette:** A professional palette using soft pastel tones: light blue for the primary workflow, light green for the drafting stage, light orange for verification, and soft purple for feedback.\n*   **Line Styles:** Solid blue arrows represent the main data flow within a single iteration. Dashed blue arrows indicate the \"input refreshing\" loop where the selected segment is sent back to the start for the next iteration.\n*   **Typography:** All labels use a clean, sans-serif font (e.g., Arial or Helvetica).\n\n### 2. Input and Context Module (Left)\n*   On the far left, a box labeled **\"Task Query / Prior Context\"** serves as the starting point. It contains a text icon representing $I^{(0)}$.\n*   A solid blue arrow leads from this box toward the **Drafting Stage**.\n\n### 3. Drafting Stage (Top Center)\n*   **Model Ensemble:** A row of $N$ identical robot icons labeled $M_1, M_2, \\dots, M_N$. \n*   **Parallel Inference:** The arrow from the context splits into $N$ parallel paths, each entering a model icon.\n*   **Candidate Segments:** Below each model, a small document icon represents the generated draft candidate $C_i^{(k)}$. These are color-coded (e.g., $C_1$ is green, $C_2$ is yellow, etc.) to show they are distinct segments.\n*   A group of arrows gathers these candidates and funnels them into the **Verification Stage**.\n\n### 4. Verification Stage (Bottom Center)\n*   **Mutual Evaluation Matrix:** The centerpiece of this stage is a grid-like matrix where rows represent **Verifier Models** ($M_1, \\dots, M_N$) and columns represent **Candidate Segments** ($C_1, \\dots, C_N$).\n*   **Scoring Cells:** Each cell in the matrix contains a numerical score label $s_{i,j}$, representing the normalized logit score.\n*   **Verify-in-line Hint:** A small magnifying glass icon over the matrix points to a \"Unified Sequence\" representation $[I^{(k-1)} : C_1 : C_2 : \\dots]$, visually suggesting the parallel scoring mechanism.\n*   **Weights Integration:** To the side of the matrix, a vertical vector of weights $(\\omega_1, \\dots, \\omega_N)$ is shown, with lines connecting these weights to the matrix rows to imply a weighted summation process.\n\n### 5. Online Feedback Mechanism (Bottom Right)\n*   **Reward Calculation:** A sub-module box labeled **\"Feedback Reward (\\gamma)\"**. Arrows from the Mutual Evaluation Matrix enter this box. Inside, a simplified graphic (like a \"greater-than\" symbol or a tally) illustrates the peer-preference count described in the Reward Definition.\n*   **Weight Update:** An arrow leads from the Reward box to a **\"Multiplicative Weights Update\"** block. This block shows the formula $\\omega_i e^{\\eta \\gamma}$ in small text.\n*   **Updated Weights:** The output of this block is a revised weight vector, which is shown looping back to the next round’s Verification Stage.\n\n### 6. Aggregation and Selection (Right)\n*   **Aggregated Score:** On the right side of the Verification Matrix, a column shows the final scores $y_j^{(k)}$.\n*   **Selection:** The highest score is highlighted with a gold star or a \"check\" icon.\n*   **Best Candidate:** A single document icon labeled **\"Selected Segment I^{(k)}\"** represents the output of the round.\n\n### 7. Iteration Loop\n*   A prominent **blue dashed line** originates from the \"Selected Segment\" and curves back to the very beginning, pointing into the \"Prior Context\" box. \n*   This signifies the broadcast of the best segment to all models, refreshing the input sequence for the $(k+1)$-th iteration. \n*   A small legend in the corner clarifies: \"Solid Line: Current Iteration; Dashed Line: Context Refresh.\"",
+    "stylist_v2": "This figure illustrates the **SpecEM** framework, organized into three distinct functional zones: the **Drafting Stage**, the **Verification Stage**, and the **Online Feedback Mechanism**. The layout follows a professional left-to-right and cyclic progression against a clean, white background.\n\n### 1. Overall Style and Canvas\n*   **Zone Backgrounds:** The three stages are encapsulated in large, rounded rectangles with very light, desaturated pastel fills (10% opacity) to define the macro-structure: **Drafting** (Ice Blue `#E6F3FF`), **Verification** (Pale Peach `#FFF5E6`), and **Online Feedback** (Mint Green `#E0F2F1`).\n*   **Lines and Connectors:** Primary data flow uses solid slate grey (`#4A5568`) orthogonal (right-angle) arrows. The iteration feedback loop uses a thick, dashed Bezier curve in medium-saturation blue (`#3B82F6`).\n*   **Typography:** Module headers use bold **Sans-Serif** (e.g., \"Drafting Stage\"). All mathematical variables and indices (e.g., \"$M_i$\", \"$C_j^{(k)}$\", \"$\\omega_i$\") are rendered in **Italicized Serif** (LaTeX-style).\n\n### 2. Input and Context Module (Left)\n*   A rounded rectangle with a thin grey border contains a text document icon representing the initial state.\n*   **Labels:** \"Task Query / Prior Context\" and \"$I^{(0)}$\".\n*   An orthogonal arrow leads into the Drafting Stage.\n\n### 3. Drafting Stage (Top Center Zone)\n*   **Model Ensemble:** A horizontal row of $N$ professional 2D vector robot icons representing the base LLMs.\n*   **Labels:** \"$M_1$\", \"$M_2$\", \"$\\dots$\", \"$M_N$\".\n*   **Parallel Inference:** The input path splits into $N$ parallel orthogonal branches, each entering a robot icon.\n*   **Candidate Segments:** Below each robot, a small document icon represents a generated candidate. Each icon has a unique soft pastel fill (e.g., pale green, pale lavender, pale yellow) to distinguish the segments.\n*   **Labels:** \"$C_1^{(k)}$\", \"$C_2^{(k)}$\", \"$\\dots$\", \"$C_N^{(k)}$\".\n*   Arrows gather these icons into a single funnel leading to the next stage.\n\n### 4. Verification Stage (Bottom Center Zone)\n*   **Mutual Evaluation Matrix:** A flat 2D grid where rows are labeled \"$M_1, \\dots, M_N$\" and columns are labeled \"$C_1, \\dots, C_N$\".\n*   **Scoring Cells:** Each cell contains a numerical score label \"$s_{i,j}$\". \n*   **Verify-in-line Mechanism:** A small magnifying glass icon floats over a representation of a \"Unified Sequence\" shown as a horizontal stack of blocks: \"$[I^{(k-1)} : C_1 : C_2 : \\dots]$\".\n*   **Weight Integration:** To the left of the matrix, a vertical 1D tensor (a column of small stacked squares) represents the weight vector.\n*   **Labels:** \"$(\\omega_1, \\dots, \\omega_N)$\". Lines connect the weights to their corresponding matrix rows.\n\n### 5. Online Feedback Mechanism (Bottom Right Zone)\n*   **Reward Module:** A box containing a tally-mark graphic or a \"greater-than\" comparison symbol to represent peer-preference.\n*   **Label:** \"Feedback Reward ($\\gamma$)\".\n*   **Update Block:** An arrow leads to a process node labeled \"Multiplicative Weights Update\". Inside the node, the formula \"$\\omega_i e^{\\eta \\gamma}$\" is displayed.\n*   **Loopback:** A thin, dashed line leads from the output of this block back to the weight vector in the Verification Stage, indicating a dynamic update.\n\n### 6. Aggregation and Selection (Right)\n*   **Aggregated Score Column:** To the right of the matrix, a final column shows the calculated values \"$y_j^{(k)}$\".\n*   **Selection Highlight:** The highest score in the column is highlighted with a high-saturation gold star (`#FFD700`).\n*   **Output Output:** A single, prominent document icon represents the chosen segment.\n*   **Label:** \"Selected Segment $I^{(k)}$\".\n\n### 7. Iteration Loop\n*   A prominent **dashed blue Bezier arrow** originates from the \"Selected Segment\" and curves back to the \"Input and Context\" module on the far left.\n*   **Legend:** A small box in the bottom corner clarifies the semantics: \"Solid Line: Current Iteration; Dashed Line: Context Refresh ($k \\to k+1$).\""
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "tie",
+     "faithfulness": "win",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "win",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V3_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "win",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V4_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "win",
+     "readability": "tie",
+     "conciseness": "loss",
+     "aesthetics": "tie"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 4,
+    "nb21_1k": 1,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_120",
+   "category": "generative_learning",
+   "refs": [
+    "ref_125",
+    "ref_94",
+    "ref_124",
+    "ref_57",
+    "ref_85",
+    "ref_98",
+    "ref_79",
+    "ref_178",
+    "ref_6",
+    "ref_295"
+   ],
+   "descriptions": {
+    "planner": "This figure illustrates the Imagine360 pipeline for converting a perspective anchor video into a high-quality 360-degree panoramic video. The diagram is organized in a clear, left-to-right flow, set against a clean white background with a modular, block-based architecture.\n\n### 1. Input and Condition Processing (Left Section)\nThe pipeline begins with a **Perspective Anchor Video**, shown as a stack of traditional rectangular frames.\n*   **Visual Conditioning:** The anchor video is passed through a **Visual Encoder (SAM)**, followed by a **Query-based Transformer** to extract \"Visual Tokens.\" These tokens capture fine-grained semantic and motion cues.\n*   **Text Conditioning:** A **Text Prompt** (e.g., \"A car driving through a city street\") is processed by a text encoder into **Text Embeddings**.\n*   **Rotation-Aware Input:** **Camera Rotation** parameters (Yaw, Pitch, Roll) are shown as a separate input. These, along with the anchor video, are used to generate a **360° Video Mask** and **Masked 360° Panorama Latents** via P2E (Perspective-to-Equirectangular) mapping.\n*   **Concatenated Input:** The initial input to the denoising branches is shown as a channel-wise concatenation of **Noisy 360° Latents**, the **Video Mask**, and the **Masked Panorama Latents**.\n\n### 2. Dual-Branch Denoising Structure (Center Section)\nThe core of the framework is a dual-branch U-Net architecture that maintains consistency across different domain distributions.\n*   **Panorama Branch (Top Path):** This branch operates on the global equirectangular (ERP) canvas. The blocks here include **Spatial Attention** (with a red \"fire\" icon indicating trainable LoRA parameters) and a **Motion Module** (fully highlighted as trainable to learn spherical motion patterns). A \"Circular Padding\" icon is attached to the convolutional layers here to indicate 360° close-loop continuity.\n*   **Perspective Branch (Bottom Path):** The panoramic latents are projected into $m$ individual **Perspective Views** (illustrated as a grid of smaller square frames). This branch uses **Spatial Attention** (trainable LoRA) but a **Frozen Motion Module** (indicated by a blue \"snowflake\" icon) to leverage pre-trained perspective priors.\n*   **IP-Attention:** Both branches are conditioned by the visual and text tokens through decoupled cross-attention layers (IP-Attention).\n\n### 3. Cross-Domain Spherical Attention (The Bridge)\nThe interaction between the two branches is highlighted by vertical, bidirectional arrows representing **Cross-Domain Spherical Attention**.\n*   **Attention Map Visualization:** An auxiliary box illustrates the attention mechanism. It shows a grid representing the attention map between panorama and perspective tokens.\n*   **Spherical Mask:** Regions of direct mapping between the domains are highlighted in **orange**.\n*   **Antipodal Mask:** Regions representing opposite sides of the sphere (capturing long-range reversed translational motion) are highlighted in **blue**. This specific design is labeled \"Antipodal Masking\" to emphasize its role in modeling complex panoramic motion.\n\n### 4. Output and Refinement (Right Section)\n*   **Fusion and Decoding:** The denoised latents from the Panorama branch are passed through a **VAE Decoder**. \n*   **Final Result:** The output is a high-resolution, temporally coherent **Generated 360° Video**, displayed as a wide equirectangular frame covering a full $360^\\circ \\times 180^\\circ$ field of view.\n\n### Visual Style Specifications\n*   **Colors:** Use a professional palette: light blues for frozen components, soft oranges/reds for trainable components, and green for global panorama elements. \n*   **Lines:** Use solid black arrows for data flow and dashed lines for projection mappings (E2P/P2E).\n*   **Icons:** Use small, standard icons for \"trainable\" (fire) and \"frozen\" (snowflake). Frames should have thin grey borders.\n*   **Background:** The overall background is pure white, with the two main branches contained within very light-grey shaded rectangular areas to visually group their internal components.",
+    "stylist_v2": "This diagram illustrates the Imagine360 pipeline for converting a perspective anchor video into a high-quality 360-degree panoramic video, following a modular, left-to-right progression set against a clean white background.\n\n### 1. Input and Condition Processing (Left Zone)\nThe initial stage is contained within a \"Pale Blue\" (#E6F3FF) rectangular area with a corner radius of 10px.\n*   **Input Video:** The **\"Perspective Anchor Video\"** is depicted as a 3D stack of thin rectangular frames with thin grey (#BDBDBD) borders.\n*   **Visual Conditioning:** The video flows into a **\"Visual Encoder (SAM)\"** (rounded rectangle, #BBDEFB) and then to a **\"Query-based Transformer\"** to produce **\"Visual Tokens\"** (represented as a small grid of squares).\n*   **Text Conditioning:** A **\"Text Prompt\"** is shown next to a small chat bubble icon, leading to **\"Text Embeddings.\"**\n*   **Rotation-Aware Inputs:** **\"Camera Rotation\"** parameters ($\\eta, \\phi, \\psi$) are listed in Serif font. These guide the generation of a **\"360° Video Mask\"** and **\"Masked 360° Panorama Latents\"** via P2E mapping (indicated by dashed curved lines).\n*   **Concatenation:** A circular node with a $\\otimes$ symbol denotes the channel-wise concatenation of **\"Noisy 360° Latents\"**, the **\"Video Mask\"**, and the **\"Masked Panorama Latents.\"**\n\n### 2. Dual-Branch Denoising Structure (Center Zone)\nThis section uses a macro-micro layout with two parallel horizontal branches.\n*   **Panorama Branch (Top Path):** Encapsulated in a \"Mint\" (#E0F2F1) zone.\n    *   **\"Spatial Attention\"**: A rounded rectangle with a soft red fill (#FFCDD2) and a small red vector \"fire\" icon (trainable).\n    *   **\"Motion Module\"**: Fully highlighted in soft red (#FFCDD2) to signify it is trainable.\n    *   **\"Circular Padding\"**: A small circular icon with a \"loop\" symbol is attached to the convolutional layers.\n*   **Perspective Branch (Bottom Path):** Encapsulated in a \"Pale Lavender\" (#F3E5F5) zone.\n    *   The latents are projected into $m$ **\"Perspective Views\"**, shown as a $4 \\times 5$ grid of small square frames.\n    *   **\"Spatial Attention\"**: A rounded rectangle with soft red fill (#FFCDD2) and a \"fire\" icon.\n    *   **\"Frozen Motion Module\"**: A rounded rectangle with a \"Pale Ice Blue\" fill (#B0E0E6) and a small blue \"snowflake\" icon (frozen).\n*   **Conditioning:** Both branches are connected to the visual and text tokens via **\"IP-Attention\"** blocks using orthogonal lines.\n\n### 3. Cross-Domain Spherical Attention (The Bridge)\nCentrally located between the two branches is a vertical interaction zone.\n*   **Interaction:** Solid black bidirectional orthogonal arrows connect the top and bottom branches, labeled **\"Cross-Domain Spherical Attention.\"**\n*   **Attention Map Visualization:** A breakout box (white with a dashed grey border) displays a grid representing token relationships.\n*   **Masking:**\n    *   Specific grid cells are colored \"Soft Orange\" (#FFCC80) to represent the **\"Spherical Mask\"** (direct mapping).\n    *   Opposing grid cells are colored \"Soft Blue\" (#90CAF9) to represent the **\"Antipodal Mask\"**, with the label **\"Antipodal Masking\"** nearby in Sans-Serif font.\n\n### 4. Output and Refinement (Right Zone)\n*   **Decoding:** The optimized latents from the Panorama branch flow through a **\"VAE Decoder\"** (rounded rectangle, #CFD8DC).\n*   **Final Output:** The **\"Generated 360° Video\"** is presented as a large, wide equirectangular frame ($360^\\circ \\times 180^\\circ$) with high-resolution visual details.\n\n### Visual Style Specifications\n*   **Palette:** Scientific pastels; #FFCDD2 (trainable/warm), #B0E0E6 (frozen/cool), #E0F2F1 (global panorama), and #F3E5F5 (perspective).\n*   **Lines:** Solid dark grey (#424242) orthogonal \"elbow\" arrows for primary data flow; dashed grey lines (#757575) for projection and auxiliary mapping.\n*   **Typography:** Sans-Serif (Helvetica) for all component labels (e.g., **\"Panorama Branch\"**, **\"VAE Decoder\"**); Serif and Italicized for all mathematical variables ($m, T, \\eta, \\phi, \\psi, z_E$).\n*   **Geometry:** Process nodes are rounded rectangles with an 8px corner radius. Data tensors are 3D cuboids; attention maps are flat grids.\n*   **Icons:** Minimalist vector icons for \"fire\" (trainable) and \"snowflake\" (frozen). Small grey border (0.5pt) for all image/video frames."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V3_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V4_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    }
+   },
+   "leak_counts": {
+    "V0": 6,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_115",
+   "category": "generative_learning",
+   "refs": [
+    "ref_55",
+    "ref_127",
+    "ref_166",
+    "ref_76",
+    "ref_228",
+    "ref_285",
+    "ref_154",
+    "ref_208",
+    "ref_140",
+    "ref_301"
+   ],
+   "descriptions": {
+    "planner": "The diagram illustrates the inference pipeline of a parameter-efficient continual learning framework focusing on task identity re-matching. It is set against a clean, white background with professional, color-coded components.\n\n### **Diagram Layout and Components**\n1.  **Input and Feature Extraction (Left):**\n    *   The process starts with an **Input Image $x$**. An arrow leads to a block labeled **\"Frozen Pre-trained Model $h_{ptm}$\"** (pastel blue, marked with a snowflake icon to indicate it is frozen).\n    *   From this backbone, a feature vector **$q(x)$** is extracted.\n\n2.  **Initial Matching (Top-Center):**\n    *   $q(x)$ is fed into an **\"Auxiliary Classifier $g_\\omega$\"** (light yellow).\n    *   The output is labeled **\"Initial Matching $\\hat{t}_f$\"**, which represents the predicted task identity.\n    *   A set of **top-$N$ Task IDs ($\\Gamma$)** is also produced for the CRM branch.\n\n3.  **Parameter Pool (Center):**\n    *   A central box labeled **\"Parameter Pool $P$\"** contains multiple small blocks representing task-specific parameters ($p_0, p_1, \\dots, p_t$).\n    *   An arrow from $\\hat{t}_f$ selects a specific parameter set **$p_{\\hat{t}_f}$** from the pool.\n\n4.  **Hybrid Re-matching (HRM) Logic (Bottom-Center):**\n    *   The selected $p_{\\hat{t}_f}$ is plugged into the $h_{ptm}$ to generate a class distribution **$\\tilde{d}(x)$**. This distribution passes into the **Hybrid Re-matching** logic, split into two parallel scenarios:\n        *   **Direct Re-matching (DRM):** An arrow shows $\\tilde{d}(x)$ being converted into a new task ID **$\\hat{t}_s$**. A decision diamond checks if $\\hat{t}_f \\neq \\hat{t}_s$. If true, the parameter is updated to $p_{\\hat{t}_s}$.\n        *   **Confidence-based Re-matching (CRM):** A block calculates the **Confidence $E(\\tilde{d}(x))$**. If the confidence is below a threshold $\\tau$, the system selects a new ID $\\hat{t}_s$ from the top-$N$ candidates $\\Gamma$ that maximizes confidence.\n\n5.  **Final Prediction (Right):**\n    *   The finalized parameter set (either $p_{\\hat{t}_f}$ or the re-matched $p_{\\hat{t}_s}$) is combined with the backbone and a **Linear Classifier $g_{\\theta_g}$**.\n    *   The terminal output is the final predicted label **$\\hat{y}$**.\n\n### **Visual Styling**\n*   **Colors:** Use pastel blue for frozen components, soft orange for trainable or task-specific parameters, and light green for final outputs.\n*   **Lines:** Solid black arrows for data flow; dashed lines for auxiliary information (like the $\\Gamma$ set).\n*   **Icons:** Snowflake for frozen weights, a flame or gear icon for tunable parameters, and a magnifying glass for the matching detector.\n*   **Text:** All mathematical notation ($\\hat{t}_f, \\hat{t}_s, p, q(x)$) should be clear and rendered in LaTeX-style font.",
+    "stylist_v2": "The diagram illustrates the inference pipeline of the HRM-PET framework for task identity re-matching, presented with a clean, professional aesthetic on a white background using modular zones to distinguish logical stages.\n\n### **Diagram Layout and Components**\n\n1.  **Input and Feature Extraction (Left Zone):**\n    *   The pipeline begins with an **Input Image \"$x$\"**, represented as a small 2D image thumbnail. \n    *   A solid charcoal grey orthogonal arrow leads to a large rounded rectangle (corner radius 10px) labeled **\"Frozen Pre-trained Model $h_{ptm}$\"**. This block has a pale ice blue fill (`#E6F3FF`), a thin slate grey border, and a small blue snowflake icon in the top corner.\n    *   An arrow exits this block to a point labeled with the feature vector **\"$q(x)$\"** (rendered in serif-italic LaTeX font).\n\n2.  **Initial Task Matching (Top-Center):**\n    *   The feature **\"$q(x)$\"** flows into a rounded rectangle labeled **\"Auxiliary Classifier $g_\\omega$\"** (pale yellow fill `#FFFDE7`, thin gold border).\n    *   Two outputs emerge: \n        *   A solid arrow leading to the label **\"Initial Matching $\\hat{t}_f$\"**.\n        *   A dashed charcoal grey line labeled **\"top-$N$ Task IDs ($\\Gamma$)\"**, which routes downward toward the re-matching logic.\n\n3.  **Parameter Management (Center):**\n    *   A large, rectangular container with a dashed light grey border is labeled **\"Parameter Pool $P$\"**. Inside, multiple small 3D cuboids represent task-specific parameters (**\"$p_0, p_1, \\dots, p_t$\"**). These cuboids have a soft orange fill (`#FFF3E0`), a burnt orange border, and a tiny orange flame icon to indicate they are trainable/active modules.\n    *   A selection line originates from **\"$\\hat{t}_f$\"** and points to a specific block **\"$p_{\\hat{t}_f}$\"** within the pool.\n\n4.  **Hybrid Re-matching (HRM) Logic (Bottom-Center):**\n    *   This section is encapsulated in a pale lavender (`#F3E5F5`) zone to denote a distinct logical process.\n    *   The selected parameter **\"$p_{\\hat{t}_f}$\"** is combined with the backbone to produce the **\"Class Distribution $\\tilde{d}(x)$\"**. This distribution enters the **\"Hybrid Re-matching\"** block.\n    *   **Direct Re-matching (DRM) Branch:** An arrow shows **\"$\\tilde{d}(x)$\"** being mapped to a secondary task ID **\"$\\hat{t}_s$\"**. A decision diamond (corner radius 2px) contains the logic **\"$\\hat{t}_f \\neq \\hat{t}_s$\"**. \n    *   **Confidence-based Re-matching (CRM) Branch:** A block labeled with a magnifying glass icon calculates **\"Confidence $E(\\tilde{d}(x))$\"**. An orthogonal arrow compares this to a threshold **\"$\\tau$\"**. If the condition is met, a new task ID **\"$\\hat{t}_s$\"** is selected from the candidate set **\"$\\Gamma$\"** (arriving via the dashed line) to maximize confidence.\n\n5.  **Final Inference (Right Zone):**\n    *   The finalized parameter set (labeled as either **\"$p_{\\hat{t}_f}$\"** or the re-matched **\"$p_{\\hat{t}_s}$\"**) is fed into the final processing stage.\n    *   A rounded rectangle labeled **\"Linear Classifier $g_{\\theta_g}$\"** (soft orange fill `#FFF3E0`) processes the features.\n    *   The terminal output is the **\"Final Predicted Label $\\hat{y}$\"**, placed in a light mint green pill-shaped container (`#E8F5E9`) with a dark green border.\n\n### **Visual Styling and Specifications**\n\n*   **Color Palette:**\n    *   Frozen/Static Modules: Pale Ice Blue (`#E6F3FF`) with Slate Grey borders.\n    *   Trainable/Active Parameters: Soft Orange (`#FFF3E0`) with Burnt Orange borders.\n    *   Logic/Decision Zones: Pale Lavender (`#F3E5F5`).\n    *   Final Output: Light Mint Green (`#E8F5E9`).\n*   **Geometry:** \n    *   All process nodes are rounded rectangles with a 10px corner radius.\n    *   Parameters in the pool are depicted as 3D isometric cuboids.\n    *   The decision node is a standard diamond shape.\n*   **Connectors:** \n    *   Primary data flow uses solid charcoal grey orthogonal (right-angle) arrows.\n    *   Auxiliary flow (e.g., the $\\Gamma$ set and thresholding logic) uses dashed charcoal grey lines.\n*   **Typography:**\n    *   Module labels (e.g., **\"Parameter Pool\"**, **\"Auxiliary Classifier\"**) use a bold Sans-Serif font (Helvetica or Arial).\n    *   Mathematical variables (e.g., **\"$x, \\hat{t}_f, \\hat{t}_s, p, q(x), \\tilde{d}(x), \\tau, \\hat{y}$\"**) use Serif-Italic LaTeX-style formatting.\n*   **Icons:** \n    *   A blue snowflake icon for **\"$h_{ptm}$\"**.\n    *   An orange flame icon for task-specific parameters **\"$p_i$\"**.\n    *   A small magnifying glass icon inside the CRM block for the matching detector."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V3_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V4_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    }
+   },
+   "leak_counts": {
+    "V0": 8,
+    "V1": 0,
+    "V2": 0,
+    "V3": 5,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_294",
+   "category": "generative_learning",
+   "refs": [
+    "ref_295",
+    "ref_98",
+    "ref_24",
+    "ref_174",
+    "ref_34",
+    "ref_6",
+    "ref_132",
+    "ref_161",
+    "ref_70",
+    "ref_125"
+   ],
+   "descriptions": {
+    "planner": "The design of the PEVA architecture is illustrated in a multi-part diagram, typically divided into three main conceptual panels: **(a) Data Processing with Random Timeskips**, **(b) Autoregressive Training with Teacher Forcing**, and **(c) Detailed CDiT Block & Attention Mechanism**. The overall style is a clean, scientific schematic with a pure white background, utilizing pastel-colored modules (blue, green, and orange), thin black connection lines, and standard icons such as a \"lock\" for frozen parameters and \"fire\" for trainable ones.\n\n### (a) Data Processing with Random Timeskips\nThis panel shows the transformation of raw video into a sparse sequence of latent representations.\n- **Input Video Timeline:** A horizontal sequence of video frames ($x_0, x_1, \\dots, x_T$) is shown as a filmstrip. To represent **Random Timeskips**, only a subset of these frames is highlighted (e.g., in light blue), while skipped frames are shown as semi-transparent or grayed-out boxes.\n- **Fixed VAE Encoder:** Arrows lead from the selected frames into a box labeled \"VAE Encoder\" (indicated with a gray lock icon to signify it is frozen).\n- **Latent Tokens:** The output of the encoder is a sequence of **Clean Tokens** ($s_0, s_1, s_2, \\dots$), depicted as rows of small colored squares. These represent the \"ground truth\" latent states used during training.\n\n### (b) Autoregressive Training with Teacher Forcing\nThis panel illustrates the training flow of the **Conditional Diffusion Transformer (CDiT)**.\n- **Sequence Flow:** A sequence of frames is laid out from left to right.\n- **Teacher Forcing:** The diagram shows the model predicting the frame at time $t+1$. A **Noisy Latent** ($z_\\tau$), represented as a square filled with gray static/noise, is the primary input. \n- **Contextual Conditioning:** Beneath the noisy latent, the **Clean Past Tokens** ($s_t, s_{t-1}, \\dots$) from panel (a) are fed into the CDiT blocks as context. This \"teacher forcing\" is visualized by arrows pointing from the ground-truth latents of previous time steps directly into the current prediction block.\n- **Action Inputs:** High-dimensional **Action Embeddings** ($a_t$), represented by a 1D vector bar or a small human skeleton icon (Xsens/SMPL style), are shown entering the side of the CDiT blocks.\n\n### (c) CDiT Block & Attention Mechanism\nThis panel provides a zoomed-in view of the internal logic of a single transformer block.\n- **Attention Masks:** A 2D grid (attention mask) is used to visualize the \"Spatial-only\" and \"Past-frame-only\" dependencies. \n    - **Spatial Attention:** A block of the mask shows that tokens within the current \"noisy\" image can attend to each other.\n    - **Cross-Image Attention:** The mask shows that current tokens can only attend to the \"clean\" tokens from the historical context frames, preventing information leakage from the future.\n- **Adaptive Layer Normalization (AdaLN):** A sub-module shows the **Action Embedding ($a_t$)** and the **Noise Timestep ($\\tau$)** being concatenated. They are passed through a small MLP (indicated with a \"fire\" icon) to generate \"Scale\" and \"Shift\" parameters ($\\gamma, \\beta$), which modulate the visual tokens within the Layer Norm operation.\n- **Residual Connections:** Standard transformer architecture elements, including Multi-Head Attention (MHSA), Feed-Forward Networks (FFN), and residual skip connections, are shown with \"+\" symbols.\n\n### Labels and Notations\n- Mathematical notations such as $x_t$ (frame), $s_t$ (latent), $a_t$ (action), $z_\\tau$ (noisy latent), and $\\hat{\\epsilon}$ (predicted noise) are used consistently.\n- A legend or small icons help distinguish between **Vision Tokens** (blue squares) and **Action Tokens** (orange vectors).\n- Arrows clearly define the data flow from the input video and action sequence to the final denoised video generation.",
+    "stylist_v2": "The PEVA architecture is illustrated in a three-panel scientific schematic following a \"Soft Tech & Scientific Pastels\" aesthetic. The layout uses a narrative left-to-right flow, organized into desaturated background \"zones\" that encapsulate different logical stages. All process nodes are rounded rectangles (corner radius 8px), and all mathematical variables—such as \"$x_t$\", \"$s_t$\", \"$a_t$\", \"$z_\\tau$\", and \"$\\hat{\\epsilon}$\"—are rendered in Serif-Italic (Times New Roman), while text labels like \"VAE Encoder\" and \"CDiT Block\" use Bold Sans-Serif (Helvetica).\n\n### (a) Data Processing with Random Timeskips\nThis panel is encapsulated in a \"Pale Blue\" (#E6F3FF) background zone.\n- **Input Video Timeline:** A horizontal sequence of video frames \"$x_0, x_1, \\dots, x_T$\" is depicted as a filmstrip of rounded rectangles. To represent **Random Timeskips**, active frames are highlighted with a medium-saturated blue border, while skipped frames are semi-transparent with a light gray fill.\n- **Fixed VAE Encoder:** A cool-toned \"Ice Blue\" rounded rectangle labeled \"VAE Encoder\" features a \"❄️\" (Snowflake) icon in the top corner to indicate frozen parameters. \n- **Latent Tokens:** The output is a sequence of **Clean Tokens** ($s_0, s_1, s_2, \\dots$), visualized as flat 2D grids of small colored squares.\n\n### (b) Autoregressive Training with Teacher Forcing\nThis panel is encapsulated in a \"Pale Lavender\" (#F3E5F5) background zone, connected to panel (a) via solid gray \"Elbow\" (right-angle) arrows.\n- **Teacher Forcing Flow:** The sequence progresses from left to right. The **Noisy Latent** ($z_\\tau$) is shown as a 3D cuboid with a grainy, high-frequency noise texture to represent a specific diffusion timestep.\n- **Contextual Conditioning:** Beneath the current prediction, **Clean Past Tokens** ($s_t, s_{t-1}, \\dots$) are grouped in a dashed-line box. Solid lines lead from these tokens into the **CDiT Block**.\n- **Action Inputs:** **Action Embeddings** ($a_t$) are represented by a 1D vector bar in a warm \"Peach/Orange\" tone, accompanied by a small, minimalist 2D skeletal icon to denote whole-body motion.\n- **Model State:** The **CDiT Block** is a medium-saturated \"Teal\" rounded rectangle marked with a \"🔥\" (Fire) icon to signify it is a trainable module.\n\n### (c) CDiT Block & Attention Mechanism\nA \"Macro-Micro\" breakout style is used here: dashed lines expand a single block from panel (b) into this detailed view, set against a \"Cream\" (#F5F5DC) background zone.\n- **Attention Masks:** Two 2D grids visualize the masking strategy:\n    - **Spatial Attention:** A grid highlighting self-attention within the noisy image tokens.\n    - **Cross-Image Attention:** A grid showing tokens attending only to historical \"clean\" context, with the \"future\" portion of the matrix grayed out.\n- **Adaptive Layer Normalization (AdaLN):** A sub-module illustrates the **Action Embedding** ($a_t$) and the **Noise Timestep** ($\\tau$) entering a \"$\\otimes$\" (Concatenation) operator. They flow into a small \"MLP\" box (marked with a \"🔥\" icon), which outputs \"Scale\" and \"Shift\" parameters ($\\gamma, \\beta$) that point into a \"Layer Norm\" node.\n- **Residual Connections:** Data flow is shown via solid black lines, while residual skip connections are represented by dashed lines that terminate at a \"$\\oplus$\" (Addition) operator.\n\n### Labels and Notations\n- **Vision Tokens** are represented by blue squares; **Action Tokens** are represented by orange vectors.\n- All connections use \"Elbow\" style right-angle turns to imply technical precision.\n- The final output of the CDiT block is labeled as the **Predicted Noise** ($\\hat{\\epsilon}$), shown as a vector pointing toward a loss calculation area."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V0": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "win",
+     "aesthetics": "tie"
+    },
+    "V2_vs_V1": {
+     "overall": "win",
+     "faithfulness": "tie",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V3_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V4_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "loss",
+     "aesthetics": "tie"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_262",
+   "category": "generative_learning",
+   "refs": [
+    "ref_218",
+    "ref_232",
+    "ref_190",
+    "ref_137",
+    "ref_227",
+    "ref_292",
+    "ref_230",
+    "ref_75",
+    "ref_166",
+    "ref_213"
+   ],
+   "descriptions": {
+    "planner": "This figure illustrates the reinforcement fine-tuning framework for unified multimodal models. The diagram is organized into a cohesive flow from left to right, set against a pure white background with professional, rounded-corner containers and a clean color palette (blues, oranges, and greens).\n\n### 1. Input and Policy Sampling (Left Section)\n*   **Query Block:** At the far left, a box labeled **\"Input Prompt $X$\"** contains an example multimodal query (e.g., \"Tell a story about a cat...\").\n*   **Policy Model:** An arrow points from the input to a central icon representing the **\"Policy Model $\\pi_{\\theta}$\"** (depicted as a robot head icon with a small \"flame\" to indicate it is trainable).\n*   **Reference Model:** Above or beside the policy model is a grayed-out **\"Reference Model $\\pi_{ref}$\"** with a \"snowflake\" icon to indicate it is frozen. A double-headed arrow between the two models is labeled **\"Unified KL Divergence\"**, representing the per-token penalty across both text and image modalities.\n*   **Sampling Process:** Multiple arrows emerge from the Policy Model to indicate the sampling of a group of $G$ candidate responses (**$Y_1, Y_2, \\dots, Y_G$**), consistent with the GRPO algorithm.\n\n### 2. Interleaved Multimodal Completions (Center Section)\nThis section highlights the structure of the generated sequences. One of the completions is expanded to show its internal token structure:\n*   **Token Sequence:** A horizontal sequence of colored blocks. \n    *   **Reasoning Phase:** Starts with a `<think>` tag, followed by light blue blocks representing **text reasoning tokens**.\n    *   **Transition:** An orange block labeled `<vis>` serves as the transition marker.\n    *   **Generation Phase:** Followed by green blocks representing **visual/image tokens**, which are then decoded into a small thumbnail image.\n*   **Interleaved Output:** The completion is labeled **\"Interleaved Text-Image Completion $Y_i$\"**, explicitly showing the autoregressive nature of the generation.\n\n### 3. Hybrid Reward System (Upper Right Section)\nA large container titled **\"Hybrid Reward Signal\"** receives the completions. Inside, it is divided into three functional modules:\n*   **Textual Reward ($r_t$):** An icon of a document, labeled \"Relevance & Coherence,\" representing the evaluation of the generated text.\n*   **Visual Reward ($r_v$):** An icon of a painting or eye, labeled \"Image Quality & Alignment,\" representing the evaluation of the generated image.\n*   **Format Reward ($r_f$):** An icon of a checklist, labeled \"Structure Consistency,\" ensuring the correct use of `<think>` and `<vis>` tags.\n*   **Summation:** These three signals flow into a plus sign ($+$) to produce the total reward **$r(X, Y_i)$**.\n\n### 4. Group Relative Advantage and Optimization (Lower Right Section)\n*   **Advantage Calculation:** The total rewards for the group ($r_1 \\dots r_G$) flow into a box labeled **\"Group Normalization\"**. This box shows the mathematical operation $\\frac{r_i - \\text{mean}}{\\text{std}}$ to compute the **Group Relative Advantage ($A_{i,t}$)**.\n*   **Token-Level Advantage:** A small call-out indicates that advantages are applied at the token level, with a summation sign ($\\sum$) signifying the accumulation of process-level rewards.\n*   **Policy Update:** A dashed line labeled **\"Policy Gradient Update\"** loops back from the Advantage/Loss calculation to the **Policy Model ($\\pi_{\\theta}$)** at the start, closing the reinforcement learning loop.\n\n### Style and Format Details\n*   **Color Coding:** Blue is used for textual components and the model; Green for visual/image components; Orange for structural tags and formatting rewards; and Purple for the final advantages and optimization loss.\n*   **Connectors:** Solid lines represent the forward data flow (sampling and reward calculation), while dashed lines represent the backward feedback for policy updates.\n*   **Legend:** A small legend at the bottom defines the icons: \"🔥 Trainable,\" \"❄️ Frozen,\" and \"$\\mathbb{D}_{uni}$ Unified KL.\"",
+    "stylist_v2": "This figure illustrates the reinforcement fine-tuning framework for unified multimodal models, organized in a logical left-to-right progression. The diagram is set against a pure white background, with distinct logical stages encapsulated in light, desaturated pastel containers to define functional zones.\n\n### 1. Input and Policy Sampling (Left Section)\nThis stage is enclosed in a rounded-corner container with a \"Pale Blue (#E6F3FF)\" fill and a thin grey border.\n*   **Query Block:** At the far left, a rounded rectangle with a \"White (#FFFFFF)\" fill contains the text **\"Input Prompt $X$\"** and a document icon, representing a multimodal query.\n*   **Policy Model:** A central icon of a friendly 2D vector robot head represents the **\"Policy Model $\\pi_{\\theta}$\"**. It features a small \"Bright Orange (#FF8C00)\" flame icon (🔥) to denote it is trainable.\n*   **Reference Model:** Positioned slightly above the policy model is a desaturated, semi-transparent robot icon labeled **\"Reference Model $\\pi_{ref}$\"**. It features a \"Light Cyan (#E0FFFF)\" snowflake icon (❄) to denote it is frozen. \n*   **Unified KL Divergence:** A grey double-headed arrow connecting the two models is labeled **\"$\\mathbb{D}_{uni}$ Unified KL Divergence\"**, representing the per-token penalty.\n*   **Sampling Process:** Multiple solid grey orthogonal arrows emerge from the Policy Model, pointing toward a stack of $G$ layered rounded rectangles representing candidate responses (**$Y_1, Y_2, \\dots, Y_G$**).\n\n### 2. Interleaved Multimodal Completions (Center Section)\nOne completion, **\"Interleaved Text-Image Completion $Y_i$\"**, is highlighted and expanded to show its internal token structure as a horizontal sequence of 3D cuboids.\n*   **Reasoning Phase:** The sequence begins with a \"Peach (#FFDAB9)\" cuboid labeled `<think>`, followed by a series of \"Light Blue (#B0E0E6)\" cuboids representing **text reasoning tokens**.\n*   **Transition:** A \"Deep Orange (#FF4500)\" cuboid labeled `<vis>` marks the modality transition.\n*   **Generation Phase:** This is followed by \"Mint Green (#98FB98)\" cuboids representing **visual tokens**, which terminate in a small, realistic thumbnail image of a cat.\n*   **Connectors:** Thin grey solid lines indicate the autoregressive flow from one token to the next.\n\n### 3. Hybrid Reward System (Upper Right Section)\nA large rounded-corner container with a \"Pale Lavender (#F3E5F5)\" fill is titled **\"Hybrid Reward Signal\"**.\n*   **Modules:** Inside, three \"White (#FFFFFF)\" rounded rectangles house the specific reward types:\n    *   **Textual Reward ($r_t$):** Accompanied by a document icon and labeled \"Relevance & Coherence.\"\n    *   **Visual Reward ($r_v$):** Accompanied by an eye icon and labeled \"Image Quality & Alignment.\"\n    *   **Format Reward ($r_f$):** Accompanied by a checklist icon and labeled \"Structure Consistency.\"\n*   **Summation:** Solid lines from these modules converge at a circular node containing a bold **\"+\"** operator, outputting the total reward **$r(X, Y_i)$**.\n\n### 4. Group Relative Advantage and Optimization (Lower Right Section)\n*   **Advantage Calculation:** The total rewards ($r_1 \\dots r_G$) flow via solid orthogonal lines into a \"White (#FFFFFF)\" box labeled **\"Group Normalization\"**. Inside, the formula $\\frac{r_i - \\text{mean}}{\\text{std}}$ is shown in Serif font to compute the **Group Relative Advantage ($A_{i,t}$)**.\n*   **Token-Level Advantage:** A small call-out bubble with a \"Pale Gold (#FFFACD)\" fill contains a summation sign ($\\sum$) to signify the accumulation of process-level rewards.\n*   **Policy Update:** A \"Deep Purple (#800080)\" dashed curved arrow (Bezier) loops back from the Advantage/Loss calculation to the **Policy Model ($\\pi_{\\theta}$)**, labeled **\"Policy Gradient Update\"**.\n\n### Visual and Style Specifications\n*   **Typography:** All labels (e.g., \"Policy Model\", \"Group Normalization\") use a **Bold Sans-Serif** font. All mathematical variables (e.g., $X, Y_i, \\pi_{\\theta}, \\hat{A}_{i,t}, \\mathcal{L}_{GRPO}$) use **Italicized Serif** (LaTeX-style) font.\n*   **Color Palette:** \n    *   **Textual elements:** \"Soft Blue (#4682B4)\".\n    *   **Visual elements:** \"Sage Green (#2E8B57)\".\n    *   **Structure/Format:** \"Terracotta (#CD5C5C)\".\n    *   **Optimization:** \"Royal Purple (#6A5ACD)\".\n*   **Connectors:** \n    *   **Solid lines:** Forward data flow and reward calculation.\n    *   **Dashed lines:** Gradient feedback and auxiliary logical connections.\n*   **Legend:** A small legend box at the bottom right defines the icons: \"🔥 Trainable,\" \"❄ Frozen,\" and \"$\\mathbb{D}_{uni}$ Unified KL.\""
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "V3_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V4_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    }
+   },
+   "leak_counts": {
+    "V0": 3,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_259",
+   "category": "science_applications",
+   "refs": [
+    "ref_280",
+    "ref_65",
+    "ref_245",
+    "ref_71",
+    "ref_244",
+    "ref_116",
+    "ref_51",
+    "ref_263",
+    "ref_27",
+    "ref_166"
+   ],
+   "descriptions": {
+    "planner": "This figure illustrates the iterative workflow of ACTMED, a probabilistic reasoning framework for clinical diagnosis that leverages Large Language Models (LLMs) as generative surrogate models. The diagram is organized in a large, circular closed-loop layout, emphasizing the continuous nature of diagnostic refinement. The overall style is clean and professional, using a pure white background, soft pastel-colored modules (light blue, mint green, and pale lavender), and refined vector icons.\n\n### 1. Patient Knowledge & Prior Estimation (Step 1)\nAt the top left of the loop, a **\"Patient Knowledge Base ($K_t$)\"** module is depicted as a folder icon containing a structured clinical vignette (including context, observations, and prior test results). A clinician icon is shown querying the system. An arrow labeled **\"Step 1\"** leads to a **\"Prior Disease Risk ($p_{\\text{prior}}$)\"** component, visualized as a bell-shaped probability distribution curve shaded in light blue, representing the initial diagnostic belief based on current information.\n\n### 2. LLM-Driven Outcome Simulation (Step 2)\nThe flow continues to the **\"Surrogate Model Sampling\"** block (Step 2). This module features a brain/chip icon representing the **LLM Surrogate**. The LLM receives $K_t$ and a list of **Candidate Tests ($U_t^{(i)}$)**. It is shown generating a cluster of small circular particles or text snippets labeled **\"Simulated Outcomes ($u_t^{(i,j)}$)\"**, which represent the diverse, plausible results the model predicts for each potential test.\n\n### 3. Belief Update & Information Gain (Steps 3–4)\nThe simulated outcomes feed into a **\"Probabilistic Reasoning\"** module:\n*   **Step 3 (Posterior Beliefs):** The diagram shows a transformation from the single $p_{\\text{prior}}$ curve into multiple overlapping **Posterior Curves ($p_{\\text{post}}^{(i,j)}$)**, indicating how diagnostic confidence would shift given each simulated result.\n*   **Step 4 (Utility Calculation):** This section contains a mathematical block displaying the normalized utility formula: $\\mathcal{F}(U_t^{(i)}) = I(U_t^{(i)}) / c(U_t^{(i)})$. To the right, a **\"KL Divergence\"** icon (showing the gap between two shaded distributions) illustrates the information-theoretic benefit. A ranking list icon appears here, highlighting the **\"Most Informative Test\"** selected at the top.\n\n### 4. Clinician Action & Feedback (Steps 5–6)\nAn arrow labeled **\"Step 5: Recommendation\"** leads back toward the clinician. The clinician is shown reviewing the ranked list and performing the **Physical Test** (represented by a medical vial or lab-slip icon). **Step 6** shows the transition from the \"Probabilistic Simulation\" (within the machine) to the **\"Observed Outcome ($\\hat{u}_t$)\"** in the real world.\n\n### 5. Knowledge Update & Loop Closure (Step 7)\nThe **Observed Outcome** is carried by a thick, curved arrow labeled **\"Step 7: Update Context\"** that leads directly back into the **Patient Knowledge Base ($K_t$ → $K_{t+1}$)**. This closes the loop, indicating that the patient's profile has been enriched and the system is ready to either estimate the updated disease risk for a final diagnosis or recommend the next most informative test.\n\n### Visual Details\n*   **Color Palette:** Light blue for medical data, mint green for the ACTMED processing steps, and soft grey for background containers.\n*   **Lines & Arrows:** Solid black lines with a 1.5pt thickness for primary flow; dashed lines for the LLM’s internal sampling paths. \n*   **Annotations:** Mathematical symbols such as $P(U | K)$ and $\\mathbb{E}[\\text{KL}(\\cdot)]$ are placed neatly near their respective modules in a clean sans-serif font to maintain technical clarity without cluttering the visual space.\n*   **Threshold Marker:** Near the final decision point, a small vertical dashed line labeled **\"Decision Threshold $\\theta = 0.5$\"** indicates the point where information acquisition might stop.",
+    "stylist_v2": "This diagram illustrates the iterative workflow of ACTMED, a probabilistic reasoning framework for clinical diagnosis using Large Language Models (LLMs) as generative surrogate models. The layout follows a large, circular closed-loop narrative, organized on a pure white background with soft, desaturated pastel \"zones\" to group logical stages.\n\n### 1. Patient Knowledge & Prior Estimation (Step 1)\nAt the top left, the **\"Patient Knowledge Base ($K_t$)\"** is housed in a Pale Blue (`#E6F3FF`) cylinder icon, representing a structured database of clinical vignettes. A simplified 2D vector clinician icon is shown querying this module. A solid charcoal grey arrow (1.5pt) labeled **\"Step 1\"** leads to the **\"Prior Disease Risk ($p_{\\text{prior}}$)\"** component. This is visualized as a single bell-shaped probability distribution curve with a light blue fill (`#B3D9FF`) and a 10% opacity, representing the initial diagnostic belief.\n\n### 2. LLM-Driven Outcome Simulation (Step 2)\nThe flow moves right into a Mint Green (`#E0F2F1`) shaded \"Surrogate Zone.\" This module features a sleek, 2D chip icon representing the **LLM Surrogate**. The surrogate receives the variables **\"$K_t$\"** and a list of **\"Candidate Tests ($U_t^{(i)}$)\"**. To represent sampling, the model generates a cloud of small, semi-transparent circular particles in varied mint tones, labeled **\"Simulated Outcomes ($u_t^{(i,j)}$)\"**, illustrating the diverse predictions for each test.\n\n### 3. Belief Update & Information Gain (Steps 3–4)\nThe simulated outcomes transition into a Pale Lavender (`#F3E5F5`) \"Reasoning Zone\":\n*   **Step 3 (Posterior Beliefs):** The diagram shows the transformation of the $p_{\\text{prior}}$ curve into a cluster of multiple overlapping **\"Posterior Curves ($p_{\\text{post}}^{(i,j)}$)\"**, drawn with thin, varied-shade lavender lines to indicate shifted diagnostic confidence.\n*   **Step 4 (Utility Calculation):** A rounded rectangle (8px corner radius) with a thin grey border contains the mathematical formula: $\\mathcal{F}(U_t^{(i)}) = I(U_t^{(i)}) / c(U_t^{(i)})$. To its right, a **\"KL Divergence\"** icon displays two overlapping shaded distributions ($p_{\\text{prior}}$ vs. $p_{\\text{post}}$) with a double-headed arrow measuring the gap. Below this, a ranking list icon highlights the **\"Most Informative Test\"** in a more saturated Teal (`#008080`) to denote the selection.\n\n### 4. Clinician Action & Feedback (Steps 5–6)\nA curved Bezier arrow labeled **\"Step 5: Recommendation\"** sweeps downward toward a 2D clinician avatar. The clinician is shown reviewing the ranked list and performing a **\"Physical Test\"**, represented by a medical vial icon with a soft grey shadow. **Step 6** depicts the transition from the internal \"Probabilistic Simulation\" to a concrete **\"Observed Outcome ($\\hat{u}_t$)\"**, visualized as a solid Ice Blue (`#E6F3FF`) data square.\n\n### 5. Knowledge Update & Loop Closure (Step 7)\nThe **\"Observed Outcome ($\\hat{u}_t$)\"** is carried by a thick, curved charcoal arrow (2pt) labeled **\"Step 7: Update Context\"**. This arrow loops back to the top, pointing to a transition label **\"$K_t \\to K_{t+1}$\"** before re-entering the Patient Knowledge Base. This completes the cycle for the next iteration.\n\n### Visual Specifications\n*   **Color Palette:** Ice Blue (`#E6F3FF`) for data; Mint Green (`#E0F2F1`) for LLM processes; Pale Lavender (`#F3E5F5`) for mathematical reasoning.\n*   **Shapes:** Rounded rectangles (8px radius) for all process nodes; cylinders for data storage.\n*   **Line Styles:** Solid charcoal lines (1.5pt) for the primary narrative loop; dashed grey lines for internal LLM sampling paths and the auxiliary **\"Decision Threshold $\\theta = 0.5$\"** marker.\n*   **Typography:** All labels (e.g., **\"Surrogate Model Sampling\"**) use a Bold Sans-Serif font (Roboto/Arial). All mathematical variables and operators (e.g., $P(U|K)$, $\\mathbb{E}[\\text{KL}(\\cdot)]$, $\\mathcal{F}(U_t^{(i)})$) are set in Italicized Serif ($LaTeX$ style).\n*   **Icons:** Minimalist 2D vector style. Use a simple 2D human silhouette for the clinician and a flat circuit-board motif for the LLM."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "win",
+     "aesthetics": "tie"
+    },
+    "V3_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V4_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    }
+   },
+   "leak_counts": {
+    "V0": 4,
+    "V1": 13,
+    "V2": 3,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 2
+   }
+  },
+  {
+   "id": "test_258",
+   "category": "science_applications",
+   "refs": [
+    "ref_39",
+    "ref_67",
+    "ref_24",
+    "ref_101",
+    "ref_42",
+    "ref_178",
+    "ref_20",
+    "ref_133",
+    "ref_285",
+    "ref_161"
+   ],
+   "descriptions": {
+    "planner": "The figure provides a comprehensive overview of the **TimeWak** framework, illustrating the pipeline from watermark embedding and data generation to inversion and detection. The diagram is set against a clean, pure white background and uses a professional, pastel-colored palette (soft blues, greens, and pinks) with clean, sans-serif labeling and distinct numbering icons ($\\textcircled{1}$ through $\\textcircled{8}$) to guide the reader.\n\n### **Stage I: Watermark Embedding (Steps 1–3)**\nThe first section, located at the top or left, details the creation of the watermark signal.\n*   **Seed Initialization:** A grid representing a multivariate time series (rows for timesteps $W$, columns for features $F$) is shown. At the start of an interval, a row of random binary seeds $\\mathbf{s}$ is generated.\n*   **Temporally Chained-Hashing ($\\textcircled{1}$):** A sequence of three columns (labeled **A, B, and C** in **soft pink**) demonstrates the chaining. Arrows show the seed at $w-1$ being copied and passed through a hash function $\\mathcal{H}$ to generate the seed at $w$. The pink highlights emphasize that the seeds are logically linked over time.\n*   **Seed Shuffling ($\\textcircled{2}$):** The grid is then modified by a shuffling operation. **Green-highlighted positional indices** are shown at the side, and arrows indicate that the seeds for each feature are independently permuted across timesteps. This is shown as a reordering of the blocks within the columns.\n*   **Noise Construction ($\\textcircled{3}$):** A mapping module converts the discrete seeds into an initial Gaussian noise matrix $\\mathbf{x}_T$. A small \"Cryptographic Key\" ($\\kappa$) icon is positioned near this process to indicate its secured nature. The seeds $\\mathbf{s}$ determine the sign of the noise values in $\\mathbf{x}_T$.\n\n### **Stage II: Time Series Generation (Step 4)**\nThe middle section depicts the generative process.\n*   **Diffusion Model ($\\textcircled{4}$):** A large, rounded rectangular block labeled **\"Time Series Diffusion Model (DDIM)\"** takes the watermarked noise $\\mathbf{x}_T$ as input.\n*   **Data Space Output:** A horizontal arrow points from the model block to a visualization of the generated multivariate time series $\\mathbf{x}_0$. This is represented as a plot with several overlapping colorful lines (e.g., blue, teal, orange), representing the different features/variates over time.\n\n### **Stage III: Watermark Inversion and Recovery (Steps 5–7)**\nThe lower section illustrates how the watermark is extracted from the generated data.\n*   **$\\epsilon$-Exact Inversion ($\\textcircled{5}$):** The generated time series $\\mathbf{x}_0$ is fed into a block labeled **\"BDIA-DDIM Inversion\"**. A dashed arrow signifies the reverse path from the data space back to the noise space $\\hat{\\mathbf{x}}_T$. \n*   **Seed Recovery ($\\textcircled{6}$):** The reconstructed noise $\\hat{\\mathbf{x}}_T$ is passed through a thresholding or cumulative distribution function (CDF) module to recover the discrete watermark seeds. The output is a noisy version of the shuffled seed grid.\n*   **Unshuffling ($\\textcircled{7}$):** A \"Reverse Shuffling\" block uses the inverse of the permutation keys from step $\\textcircled{2}$ to restore the original temporal order of the seeds.\n\n### **Stage IV: Verification (Step 8)**\nThe final component focuses on detection.\n*   **Bit Accuracy Check ($\\textcircled{8}$):** A comparison panel shows two side-by-side grids: the \"Original Temporal Chained-Hash Seeds\" (from Stage I) and the \"Recovered Seeds\" (from Stage III). \n*   **Detection Result:** Discrepancies are highlighted (e.g., small red 'x' marks or differing shades), and a final \"Bit Accuracy\" score or a \"Watermark Detected\" badge is displayed. \n\n### **Visual Style Details:**\n*   **Connective Elements:** Thick, solid grey arrows indicate the primary forward pipeline; dashed arrows indicate mathematical inversions or secondary data flows.\n*   **Color Coding:** Steps associated with the temporal chain use **pink** accents; steps associated with spatial shuffling use **green** accents.\n*   **Icons:** Small \"padlock\" icons represent the cryptographic keys used in hashing and shuffling.\n*   **Labeling:** Variables like $\\mathbf{s}, \\mathbf{x}_T, \\mathbf{x}_0, \\hat{\\mathbf{x}}_T,$ and $\\hat{\\mathbf{s}}$ are clearly labeled in LaTeX-style mathematical font.",
+    "stylist_v2": "The figure illustrates the **TimeWak** framework pipeline, showcasing the transition from watermark embedding and data generation to inversion and detection. The layout follows a clear narrative flow from top to bottom, set against a clean \"white background\" with logically grouped stages using very light \"pale blue (#E6F3FF)\" and \"pale lavender (#F3E5F5)\" background zones to distinguish processes. All process nodes are \"rounded rectangles with a 10px corner radius,\" and data structures are represented as \"flat grids\" or \"3D isometric cuboids.\"\n\n### **Stage I: Watermark Embedding (Steps 1–3)**\nThis stage is enclosed in a \"pale blue (#E6F3FF)\" rectangular zone.\n*   **Seed Initialization:** A \"3D isometric cuboid\" represents the multivariate time series ($W$ timesteps, $F$ features). A single row of \"small grey and white squares\" represents the binary seeds \"$\\mathbf{s}$\".\n*   **Temporally Chained-Hashing ($\\textcircled{1}$):** A sequence of three vertical columns (labeled \"**A**\", \"**B**\", and \"**C**\") is highlighted with a \"soft pink fill (#FFD1DC)\". \"Orthogonal arrows with right-angle turns\" show the value from \"$\\mathbf{s}^{w-1,[:]}$\" passing through a \"small gear icon\" labeled \"$\\mathcal{H}$\" to produce \"$\\mathbf{s}^{w,[:]}$\".\n*   **Seed Shuffling ($\\textcircled{2}$):** The grid is modified by feature-wise permutation. \"Mint green (#E0F2F1)\" vertical bars on the side of the cuboid indicate the feature indices. \"Curved Bezier arrows\" illustrate the reordering of rows within the columns to show independent permutation.\n*   **Noise Construction ($\\textcircled{3}$):** A mapping module converts discrete seeds into a \"Gaussian noise matrix\" \"$\\mathbf{x}_T$\", visualized as a \"grid with a speckled grain texture.\" A \"small silver padlock icon\" is placed next to a \"$\\kappa$\" label to denote the cryptographic key.\n\n### **Stage II: Time Series Generation (Step 4)**\n*   **Diffusion Model ($\\textcircled{4}$):** A large, \"pale blue (#B3D9FF) rounded rectangle\" labeled \"**Time Series Diffusion Model (DDIM)**\" receives the noise \"$\\mathbf{x}_T$\". \n*   **Data Space Output:** A \"thick, solid dark grey arrow\" leads to a plot of the generated multivariate time series \"$\\mathbf{x}_0$\". The plot features overlapping \"Teal (#008080)\", \"Coral (#FF7F50)\", and \"Sky Blue (#87CEEB)\" lines on a \"white background grid.\"\n\n### **Stage III: Watermark Inversion and Recovery (Steps 5–7)**\nThis stage is enclosed in a \"pale lavender (#F3E5F5)\" rectangular zone.\n*   **$\\epsilon$-Exact Inversion ($\\textcircled{5}$):** The generated series \"$\\mathbf{x}_0$\" enters a \"soft grey rounded rectangle\" labeled \"**BDIA-DDIM Inversion**\". A \"dashed grey elbow arrow\" indicates the mathematical reverse path back to the reconstructed noise \"$\\hat{\\mathbf{x}}_T$\".\n*   **Seed Recovery ($\\textcircled{6}$):** The noise \"$\\hat{\\mathbf{x}}_T$\" passes through a module labeled with a \"small CDF curve icon\" to produce a \"noisy version of the shuffled seed grid,\" where squares have slightly \"transparent or blurred edges.\"\n*   **Unshuffling ($\\textcircled{7}$):** A box labeled \"**Reverse Shuffling**\" uses \"inverse green arrows\" to restore the temporal order, mirroring the style of step $\\textcircled{2}$.\n\n### **Stage IV: Verification (Step 8)**\n*   **Bit Accuracy Check ($\\textcircled{8}$):** A comparison panel shows two side-by-side \"2D grids\": \"**Original Temporal Chained-Hash Seeds**\" and \"**Recovered Seeds**\". \n*   **Detection Result:** Individual cells in the recovered grid are marked with \"small red 'x' marks\" where they differ from the original. A \"gold-colored badge icon\" displays the final \"**Bit Accuracy**\" score and the text \"**Watermark Detected**\".\n\n### **Visual Details:**\n*   **Connectors:** Forward data flow uses \"solid dark grey lines with arrowheads\"; logical mapping or inversion uses \"dashed grey lines.\"\n*   **Typography:** All labels (\"**Diffusion Model**\", \"**Unshuffling**\") use a \"Bold Sans-Serif font.\" All variables (\"$\\mathbf{s}$\", \"$\\mathbf{x}_T$\", \"$\\mathbf{x}_0$\", \"$\\hat{\\mathbf{x}}_T$\", \"$\\hat{\\mathbf{s}}$\", \"$\\kappa$\") use a \"Serif Italic font.\"\n*   **Icons:** Numbering icons ($\\textcircled{1}$–$\\textcircled{8}$) are \"dark blue circles with white digits.\"\n*   **Color Logic:** \"Soft pink (#FFD1DC)\" is used for all components related to temporal chaining; \"Mint green (#E0F2F1)\" is used for all spatial shuffling components."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V3_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V4_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "win",
+     "faithfulness": "tie",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 1,
+    "V2": 3,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 3,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_48",
+   "category": "science_applications",
+   "refs": [
+    "ref_87",
+    "ref_41",
+    "ref_59",
+    "ref_45",
+    "ref_295",
+    "ref_285",
+    "ref_72",
+    "ref_113",
+    "ref_1",
+    "ref_42"
+   ],
+   "descriptions": {
+    "planner": "The figure should provide a comprehensive architectural overview of the DAWP (Direct Assimilation and Weather Prediction) framework, organized into two primary horizontal or vertical sections corresponding to **Stage 1: Initialization** and **Stage 2: Forecasting**. The overall aesthetic should be clean and technical, using a white background, light pastel-colored blocks, and distinct icons to represent different data modalities and processing modules.\n\n### Section 1: Stage 1 - Initialization (Observation Space Assimilation)\nThis section, positioned on the left or top, illustrates the process of transforming irregular satellite data into a regular observation space.\n\n*   **Input Layer:** On the far left, show multiple satellite observation sources (e.g., AMSU-A, MHS, ATMS, HIRS). Each is represented by an Earth globe or a rectangular map fragment with sparse, irregular \"swath\" patterns (diagonal strips of data) indicating missing values and orbital gaps.\n*   **Satellite-specific Mask ViT Encoders:** Each observation source points to a corresponding encoder block labeled \"Mask ViT Encoder.\" Within these blocks, show the \"tokenization\" process where the sub-images ($144 \\times 144$) are divided into small square patches. Highlight that \"missing patches\" are discarded, while \"observed patches\" are converted into feature tokens.\n*   **Multi-modal Masked Autoencoder (MMAE):** All tokens from different satellites, along with special `[EOS]` padding tokens, flow into a large central block labeled \"MMAE.\" \n    *   Inside the MMAE, use a transformer-style schematic (layers of multi-head attention). \n    *   Illustrate the \"imputation\" process by showing gray \"mask tokens\" being replaced by colored \"reconstructed tokens\" using contextual information from spatiotemporally nearby neighbors.\n*   **Assimilated Output:** The output of Stage 1 is a \"Regular Observation Space,\" represented as a clean, complete, and dense grid (sub-image) without any missing gaps or swaths.\n\n### Section 2: Stage 2 - Forecasting (Cross-regional Prediction)\nThis section follows Stage 1, showing how the model predicts future states based on the assimilated data.\n\n*   **Weather Prediction Module:** The assimilated regular sub-image is fed into a sequence of $N$ stacked blocks labeled \"Temporal-Spatial (TS) Attention Blocks.\" \n    *   Each TS block should be split internally into two sub-components: a \"Temporal Attention\" layer and a \"Spatial Attention\" layer, connected by residual addition symbols ($\\oplus$).\n*   **Global State Cache & Boundary Conditioning:** This is the most crucial part of the forecasting stage. \n    *   Position a \"Global State Cache\" icon (represented as a database or a large grid map of the whole Earth) above or beside the Prediction Module.\n    *   Show a dashed arrow labeled \"Query Neighboring Areas\" from the cache to the current sub-region being processed. This represents the \"padding\" of boundary tokens from adjacent regions into the center forecasting region to provide cross-regional context.\n    *   Show a return arrow labeled \"Update Cache\" from the predicted output back to the Global State Cache, indicating the rollout forecasting mechanism where predicted 12-hour windows update the global state.\n*   **Final Output & Rollout:** The output is a series of \"Forecasted Global Observations\" and a \"Precipitation Map\" (generated via the Mask ViT-VAE decoder). Visualize this as a sequence of maps labeled $T+12h, T+24h, \\dots$ to indicate multi-step rollout.\n\n### Formal Details and Styling:\n*   **Color Palette:** Use light blue for initialization modules (MMAE), light green for forecasting modules (TS Attention), and light orange/yellow for the Global State Cache. \n*   **Arrows:** Use thick, solid arrows for the main data flow and thin, dashed arrows for auxiliary interactions like boundary padding and cache updates.\n*   **Icons:** Include small satellite icons next to inputs, a \"mask\" icon (a small grid with a cross) for the ViT encoders, and a \"clock\" icon next to the time windows.\n*   **Legend/Key:** A small legend in the corner should define symbols like $\\oplus$ (Element-wise Addition), $\\otimes$ (Concatenation), and the meaning of different colored tokens (observed vs. masked vs. reconstructed).\n*   **Consistency:** Ensure the \"Sub-region\" ($144 \\times 144$) is visually distinct from the \"Global Grid\" to emphasize the cross-regional interaction.",
+    "stylist_v2": "The architectural overview of the DAWP framework is organized into two horizontal zones: \"Stage 1: Initialization\" and \"Stage 2: Forecasting.\" The diagram uses a clean white background with a \"Macro-Micro\" layout pattern where specific modules are shown as detailed breakout boxes.\n\n### Section 1: Stage 1 - Initialization (Observation Space Assimilation)\nThis section, positioned on the left, illustrates the transformation of irregular satellite data into a regular observation space.\n*   **Input Layer:** On the far left, four 3D tilted rectangular map fragments represent \"AMSU-A\", \"MHS\", \"ATMS\", and \"HIRS\". Each map displays sparse, diagonal \"swath\" patterns of data against a transparent background to indicate orbital gaps.\n*   **Satellite-specific Mask ViT Encoders:** Four rounded rectangles (corner radius 8px) with a pale lavender fill (`#F3E5F5`) and solid grey borders are labeled \"Mask ViT Encoder\". Inside, a small schematic shows a $144 \\times 144$ sub-image divided into a grid of small square patches. \"observed patches\" are represented as solid colored squares, while \"missing patches\" are indicated by empty dashed outlines.\n*   **Multi-modal Masked Autoencoder (MMAE):** A large central container with a pale blue fill (`#E6F3FF`) is labeled \"MMAE\". \n    *   Inside, the schematic shows a stack of transformer layers using flat horizontal bars. \n    *   The \"imputation\" process is visualized using a sequence of tokens: light grey square tokens (\"mask tokens\") are shown being replaced by vibrant blue square tokens (\"reconstructed tokens\").\n*   **Assimilated Output:** The output is labeled \"Regular Observation Space\", represented as a dense, gap-free $144 \\times 144$ grid with a light blue gradient fill to indicate completion.\n\n### Section 2: Stage 2 - Forecasting (Cross-regional Prediction)\nThis section, positioned on the right, shows the prediction logic using the assimilated data.\n*   **Weather Prediction Module:** The assimilated grid flows into a vertical stack of $N$ rounded rectangles with a mint green fill (`#E0F2F1`). These are collectively labeled \"Temporal-Spatial (TS) Attention Blocks\".\n    *   Each block is split into two internal layers: a top layer labeled \"Temporal Attention\" and a bottom layer labeled \"Spatial Attention\", connected by a solid line with a \"$\\oplus$\" (element-wise addition) symbol.\n*   **Global State Cache & Boundary Conditioning:** \n    *   A 3D cylinder icon with a pale orange fill (`#FFF3E0`) and a thin orange border is positioned above the prediction module, labeled \"Global State Cache\".\n    *   A thin, dashed orthogonal arrow labeled \"Query Neighboring Areas\" flows from the cylinder to the side of the \"TS Attention Blocks\".\n    *   A returning thin, dashed orthogonal arrow labeled \"Update Cache\" flows from the final forecasted output back to the cylinder.\n*   **Final Output & Rollout:** The output is visualized as a horizontal sequence of 3D map layers labeled \"$T+12h$\", \"$T+24h$\", and \"$\\dots$\". These are collectively labeled \"Forecasted Global Observations\". A separate map fragment with a colorful heatmap texture is labeled \"Precipitation Map\", connected to the flow via a block labeled \"Mask ViT-VAE Decoder\".\n\n### Visual Attributes and Styling:\n*   **Color Palette:** Use pale lavender (`#F3E5F5`) for Stage 1 encoders, pale blue (`#E6F3FF`) for \"MMAE\", mint green (`#E0F2F1`) for forecasting modules, and pale orange (`#FFF3E0`) for the \"Global State Cache\".\n*   **Shapes:** Processes use rounded rectangles (8px radius). Tensors use 3D stacks/cuboids. The database uses a 3D cylinder.\n*   **Lines and Arrows:** Main data flow uses thick, solid grey orthogonal arrows. Auxiliary paths (queries, updates, and residual connections) use thin, dashed grey arrows.\n*   **Typography:** Labels such as \"Mask ViT Encoder\", \"MMAE\", and \"Global State Cache\" are in bold Sans-Serif font. Mathematical variables and time steps like \"$N$\", \"$T+12h$\", and \"$T+24h$\" are in Serif Italic font.\n*   **Icons:** A small satellite icon is placed next to the input maps. A small \"mask\" icon (a grid with an 'X') is placed inside the ViT encoders. A small \"clock\" icon is placed next to the rollout sequence.\n*   **Legend:** A small legend box in the bottom right corner defines: \"$\\oplus$\" (Element-wise Addition), \"$\\otimes$\" (Concatenation), solid squares (\"observed tokens\"), and light grey squares (\"mask tokens\")."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "tie",
+     "faithfulness": "win",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V3_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V4_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "loss",
+     "readability": "tie",
+     "conciseness": "win",
+     "aesthetics": "win"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_35",
+   "category": "science_applications",
+   "refs": [
+    "ref_211",
+    "ref_42",
+    "ref_141",
+    "ref_45",
+    "ref_287",
+    "ref_101",
+    "ref_59",
+    "ref_209",
+    "ref_172",
+    "ref_140"
+   ],
+   "descriptions": {
+    "planner": "The figure is organized into three primary sections: a training workflow (top), detailed network architectures (bottom), and an evaluation pipeline (right). The overall aesthetic uses a white background with a clean, pastel-colored scheme.\n\n### 1. Training Process (Top Section)\nThe top panel illustrates the two-stage training logic:\n*   **Stage 1: Rearrangement Training:** Day $k$ neural signals are input into a **Permutation Network** (indicated as trainable with a fire icon). The output is a **Permutation Matrix** ($M_k$) which, through a Batch Matrix Multiplication (BMM) operation, produces **Rearranged Day $k$ Signals**. A **Correlation Loss** (green box) is computed by comparing these signals against **Day 0 Average Signals**.\n*   **Stage 2: Reconstruction Training:** The input consists of mixed Day 0 and rearranged Day $k$ signals. A segment of the signal is replaced by a grey **Mask** block. This masked signal passes through the **Channel-based VQ-VAE** (trainable). The training objective utilizes **Time/Freq Loss** (red box) to minimize the difference between the reconstructed output and the original unmasked signal.\n\n### 2. Network Architectures (Bottom Section)\nThis section provides zoomed-in structural details:\n*   **Permutation Network:** Shows a flattened input vector entering a series of **MLP layers**, followed by a **Sinkhorn-Knopp** operator that yields a discrete-like permutation matrix.\n*   **Channel-based VQ-VAE:**\n    *   **Channel Encoder:** Individual channel signals are converted into **Embedding Tokens** (vertical bars). These tokens enter a **Multi-Head Cross-Channel Attention** block to capture inter-channel dependencies.\n    *   **Quantization:** The resulting vectors are mapped to a **Discrete Codebook** (represented as a 2D grid of colored blocks).\n    *   **MLP Decoder:** The quantized embeddings are processed by an MLP to output the **Reconstructed Time Series**.\n\n### 3. Evaluation Process (Right Section)\nThe right panel shows the end-to-end inference flow:\n*   **Input:** New data from **Day $k+n$**.\n*   **Sequential Pipeline:** The data passes through the **Frozen Permutation Network** (snowflake icon) for alignment, then through the **Frozen VQ-VAE** for signal restoration.\n*   **Downstream Task:** The final reconstructed signal is fed into a **Fixed Decoder (Day 0)**. The output is a predicted trajectory or task result (e.g., a 2D cursor movement plot), demonstrating the model's ability to maintain decoding performance over time.\n\n### Style and Visual Cues\n*   **Color Palette:** Orange/Red for the Rearrangement module, Blue for the Reconstruction (VQ-VAE) module, and Green for target/Day 0 labels.\n*   **Connectors:** Bold arrows indicate data flow, while dashed lines link loss functions to the relevant components.\n*   **Icons:** Small \"fire\" icons denote parameters being optimized in that specific stage; \"snowflake\" icons denote frozen parameters during evaluation. Masked regions are highlighted as semi-transparent grey overlays on signal waveforms.",
+    "stylist_v2": "The diagram is presented on a clean white background, organized into three distinct functional zones using high-value pastel background fills to separate logic. All process nodes are \"rounded rectangles\" with a 10px corner radius. All mathematical variables are in *Serif* font, while labels and module names are in **Bold Sans-Serif**.\n\n### 1. Training Workflow (Top Section)\nThis section is encapsulated within a large, light \"Mint / Sage\" (#E0F2F1) container with a dashed border.\n*   **Stage 1: Rearrangement Training:** \n    *   The input is a 3D cuboid representing \"Day $k$ Signals\" ($X_k \\in \\mathbb{R}^{N \\times C \\times T}$). \n    *   A bold arrow leads to the **Permutation Network**, a \"pale orange\" (#FFECB3) rounded rectangle labeled with a small red \"fire\" icon. \n    *   The network outputs a **Permutation Matrix** ($M_k$), shown as a flat 2D grid. \n    *   A batch matrix multiplication operator $\\otimes$ connects $M_k$ and the original signals to produce \"Rearranged Day $k$ Signals\" ($X'_k$). \n    *   A \"dashed line\" connects these signals to a \"Correlation Loss\" ($\\mathcal{L}_{corr}$) box, which also receives a connection from a \"Day 0 Average Signals\" ($\\bar{X}_0$) block.\n*   **Stage 2: Reconstruction Training:** \n    *   The input is a mixture of \"Day 0\" and \"Rearranged Day $k$\" signals. \n    *   A \"semi-transparent grey overlay\" labeled **Mask** is placed over a segment of the signal waveform. \n    *   The masked signal enters the **Channel-based VQ-VAE**, a \"pale blue\" (#E3F2FD) rounded rectangle labeled with a \"fire\" icon. \n    *   A \"dashed line\" connects the reconstructed output to a \"Time/Freq Loss\" ($\\mathcal{L}_{time} + \\lambda_{freq}\\mathcal{L}_{freq}$) box.\n\n### 2. Detailed Network Architectures (Bottom Section)\nThis section uses a \"Macro-Micro\" pattern, with thin dashed lines connecting components from the top section to these detailed breakout views.\n*   **Permutation Network Detail:** \n    *   Shows a \"Flattened Input Vector\" ($x_d^{flat}$) entering a stack of three **MLP Layers**. \n    *   The data flows into a **Sinkhorn-Knopp** operator block, which outputs the doubly stochastic matrix $M_d$.\n*   **Channel-based VQ-VAE Detail:**\n    *   **Channel Encoder:** Input signals are mapped to \"Embedding Tokens\" (a row of vertical \"pale blue\" bars). These enter a large **Multi-Head Cross-Channel Attention** block. \n    *   **Quantization:** The output vectors map to a **Discrete Codebook** ($\\mathcal{C}$), visualized as an isometric 3D grid of multi-colored blocks. \n    *   **MLP Decoder:** The \"Quantized Embeddings\" ($q_{n,c}$) pass through a final **MLP Decoder** block to produce the \"Reconstructed Time Series\" ($\\hat{x}_{n,c}$).\n\n### 3. Evaluation Pipeline (Right Section)\nThis section is contained within a \"Pale Lavender\" (#F3E5F5) vertical zone to indicate the inference phase.\n*   **Input:** Data from \"Day $k+n$\" visualized as a 3D tensor.\n*   **Frozen Sequence:** \n    *   The data passes through the **Permutation Network** and then the **Channel-based VQ-VAE**. Both modules are \"ice blue\" (#E6F3FF) rounded rectangles marked with a \"snowflake\" icon to indicate frozen parameters.\n*   **Downstream Task:** \n    *   The restored signal flows into a \"Fixed Decoder (Day 0)\" block. \n    *   The final output is a \"Predicted Trajectory\", shown as a 2D line plot representing cursor movement.\n\n### Visual Styles\n*   **Colors:** \"Warm Orange\" (#FFCC80) for Rearrangement modules; \"Cool Blue\" (#90CAF9) for Reconstruction/VQ-VAE modules; \"Soft Green\" (#A5D6A7) for Day 0 targets.\n*   **Connectors:** Data flow uses \"orthogonal arrows with right-angle turns\" and solid black lines. Auxiliary flows (Loss/Gradients) use \"dashed grey lines\".\n*   **Tensors:** Data dimensions are represented as 3D cuboids to imply the $N \\times C \\times T$ structure.\n*   **Typography:** Module labels like **\"Channel Encoder\"** and **\"MLP Decoder\"** are in Bold Sans-Serif. Variables like $X_d$, $M_k$, and $\\mathcal{L}_{stage2}$ are in *Italicized Serif*."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V3_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V4_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 0,
+    "V2": 1,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 1,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_270",
+   "category": "vision_perception",
+   "refs": [
+    "ref_143",
+    "ref_191",
+    "ref_34",
+    "ref_185",
+    "ref_162",
+    "ref_219",
+    "ref_150",
+    "ref_192",
+    "ref_197",
+    "ref_99"
+   ],
+   "descriptions": {
+    "planner": "This figure provides an overview of the proposed approach for unifying perception tasks into a language interface, divided into three horizontal panels labeled **(a)**, **(b)**, and **(c)**. The overall style is clean and academic, utilizing a pure white background, pastel-colored blocks, and distinct icons to represent different data types.\n\n### (a) Segmentation Modeling\nThis panel illustrates the \"Segmentation by Embedding Retrieval\" process.\n*   **Input & Processing:** On the left, an input image (e.g., a yellow duck) is fed into a large, light-blue rectangular block labeled **\"Multimodal Transformer\"**. \n*   **Feature Extraction:** Above the transformer, a 3D grid block representing **\"Image Features ($h_v$)\"** is shown.\n*   **Language Output:** From the transformer, an arrow points to a sequence of text tokens. The sequence contains a class name (e.g., \"duck\") followed by a specific, highlighted token labeled **`<MASK>`**.\n*   **Embedding Retrieval:** An arrow points from the `<MASK>` token to its vector representation, **\"Mask Token Embedding ($e_m$)\"**, shown as a vertical colored bar.\n*   **Dot Product & Mask Generation:** A dotted line indicates a similarity operation (represented by a circle with a dot product symbol $\\odot$ or $\\otimes$) between the **Mask Token Embedding ($e_m$)** and the **Image Features ($h_v$)**. \n*   **Result:** The output of this operation is a high-contrast binary mask (the shape of the duck) shown on a dark background, indicating that the embedding has successfully \"retrieved\" the corresponding spatial features.\n\n### (b) Upsampling Masks by Multiple Mask Tokens\nThis panel details the high-resolution mask generation method.\n*   **Grid Structure:** It shows a low-resolution $1 \\times 1$ visual feature cell being upsampled into a $2 \\times 2$ grid (representing $N=2$ as stated in the caption).\n*   **Multiple Tokens:** Below the grid, four distinct mask token embeddings ($e_{m_1}, e_{m_2}, e_{m_3}, e_{m_4}$) are shown, each color-coded (e.g., light red, light green, light blue, and light purple).\n*   **Retrieval Mapping:** Four arrows, matching the colors of the embeddings, point to their respective quadrants in the $2 \\times 2$ upsampled grid. Each arrow indicates that a specific token is responsible for decoding the details of one sub-pixel region.\n*   **Final Output:** On the right, a refined, high-detail mask is shown, illustrating that using multiple tokens captures more granular information than a single token.\n\n### (c) Detection Modeling (Bounding Box Representation)\nThis panel demonstrates how the model handles object detection within the language interface.\n*   **Input Image:** A small version of the input image is shown with a bright green bounding box drawn around the target object (the duck).\n*   **Open-ended Sequence:** An arrow leads from the image to a text box containing the model's output. The text is formatted in a monospaced font to resemble code: `duck, <box> [x1], [y1], [x2], [y2] </box>`. \n*   **Discretization:** Small labels or callouts indicate that the coordinates are integers discretized from continuous spatial values, showing how location is translated into plain text numbers.\n\n**Formal Details:**\n*   **Colors:** Multimodal Transformer is **Pastel Blue**; Image features are **Light Grey/Green**; `<MASK>` tokens and their embeddings use a variety of **Vibrant Pastels** (Pink, Yellow, Mint) to distinguish instances.\n*   **Lines:** Solid black arrows indicate the data flow; dashed or dotted lines indicate feature retrieval or correspondence.\n*   **Font:** Use a clean Sans-Serif font for labels and a Monospace font (like Courier) for the `<box>` and `<MASK>` tokens.\n*   **Style:** Flat design with subtle drop shadows on the main modules to create depth. All text tokens are enclosed in small rounded-corner rectangles.",
+    "stylist_v2": "This diagram provides an overview of a unified perception interface across three horizontal panels labeled **(a)**, **(b)**, and **(c)**. The overall aesthetic follows a professional academic style with a pure white background, utilizing subtle pastel-colored zones to distinguish the three sub-figures.\n\n### (a) Segmentation Modeling\nThis panel illustrates the \"Segmentation by Embedding Retrieval\" process with a clear left-to-right narrative flow.\n*   **Input & Processing:** On the far left, a thumbnail of an input image (a yellow duck) is connected via a solid black orthogonal arrow to a large rounded rectangle (corner radius 8px) labeled **\"Multimodal Transformer\"**. This block is filled with a medium-saturation **Pastel Blue (#B0C4DE)**.\n*   **Feature Extraction:** Positioned directly above the transformer is a 3D isometric stack of grids representing **\"Image Features ($h_v$)\"**, filled with a light **Mint Green (#E0F2F1)**.\n*   **Language Output:** A solid black arrow leads from the transformer to a horizontal sequence of text tokens. Each token is enclosed in a small rounded-corner rectangle. The sequence includes the label **\"duck\"** followed by a highlighted token labeled **\"<MASK>\"** with a **Peach fill (#FFDAB9)**.\n*   **Embedding Retrieval:** A curved Bezier arrow points from the **\"<MASK>\"** token down to a vertical vector bar labeled **\"Mask Token Embedding ($e_m$)\"**, also colored in **Peach (#FFDAB9)**.\n*   **Dot Product Operation:** A dashed grey line indicates a correspondence between the **\"Mask Token Embedding ($e_m$)\"** and the **\"Image Features ($h_v$)\"**, meeting at a small circle containing a dot product symbol **\"$\\odot$\"**.\n*   **Result:** The output of this operation points to a high-contrast binary mask (silhouette of the duck) shown on a dark charcoal square.\n\n### (b) Upsampling Masks by Multiple Mask Tokens\nThis panel details the high-resolution mask generation method using a narrative layout.\n*   **Grid Structure:** On the left, a single flat square cell represents a low-resolution $1 \\times 1$ visual feature. To its right, a larger $2 \\times 2$ grid represents the upsampled feature map.\n*   **Multiple Tokens:** Below the grid, four distinct vertical vector bars represent mask token embeddings **\"$e_{m_1}, e_{m_2}, e_{m_3}, e_{m_4}$\"**. Each bar is assigned a unique light pastel color: **Soft Rose (#FFB7B2)**, **Mint (#B2FFB2)**, **Sky Blue (#B2CEFF)**, and **Lavender (#E2B2FF)**.\n*   **Retrieval Mapping:** Four thin, colored lines (matching the embedding colors) map each token to a specific quadrant of the $2 \\times 2$ grid, indicating spatial responsibility.\n*   **Final Output:** On the far right, a refined, high-detail binary mask is shown, signifying the result of the multi-token decoding.\n\n### (c) Detection Modeling (Bounding Box Representation)\nThis panel demonstrates coordinate discretization within the language interface.\n*   **Input Image:** A small thumbnail of the duck is shown with a bright **Lime Green (#32CD32)** bounding box drawn precisely around it.\n*   **Output Sequence:** A solid black arrow points to a wide rounded rectangle text box with a white fill and thin grey border. The text inside is formatted in a **Monospaced font**: `\"duck, <box> [x1], [y1], [x2], [y2] </box>\"`.\n*   **Discretization Labels:** Small Sans-Serif labels with thin lead lines point to the coordinates, indicating they are discretized integers.\n\n**Refined Visual Attributes:**\n*   **Typography:** All labels (e.g., **\"Multimodal Transformer\"**, **\"Segmentation Modeling\"**) use a bold **Sans-Serif** font. All mathematical variables (e.g., *$h_v, e_m, x_1, y_1$*) are set in **Serif and Italicized** type.\n*   **Connectors:** Architectural data flow is represented by **solid black orthogonal arrows** with right-angle turns. Logical associations or auxiliary paths are represented by **dashed grey lines**.\n*   **Containers:** All process blocks use a **rounded-corner geometry** (10px radius). Data tensors like image features use **3D isometric cuboid** shapes to imply volume.\n*   **Zones:** Each panel is subtly encapsulated in a very light, desaturated background fill: **Ice Blue (#F0F8FF)** for (a), **Pale Lavender (#F9F5FF)** for (b), and **Cream (#FFFDF0)** for (c)."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V0": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "V2_vs_V1": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "V3_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V4_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "tie"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "tie",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "win"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "loss",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 2,
+    "V2": 0,
+    "V3": 0,
+    "V4": 1,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_155",
+   "category": "vision_perception",
+   "refs": [
+    "ref_274",
+    "ref_209",
+    "ref_180",
+    "ref_219",
+    "ref_34",
+    "ref_172",
+    "ref_303",
+    "ref_66",
+    "ref_117",
+    "ref_100"
+   ],
+   "descriptions": {
+    "planner": "This illustrative diagram provides a comprehensive overview of the **MixPrompt** framework for multimodal semantic segmentation. The figure is divided into two primary sections: the **Overall Architecture** (top/main part) showing the flow between the RGB backbone and the prompting branch, and a **Zoom-in on the Mixed Prompting Module** (bottom/detail part) which elucidates the multi-subspace alignment and mixing process.\n\n### **1. Background and General Style**\n*   **Background:** A clean, professional pure white background.\n*   **Color Scheme:** A light pastel palette is used to distinguish components. **Frozen modules** are represented in **light blue** (labeled with a small gray padlock icon), while **trainable modules** are shown in **light orange/peach** (labeled with a small flame icon).\n*   **Arrows:** Solid dark-gray arrows represent the primary data flow. Dashed or colored arrows indicate cross-branch interactions or feature injections.\n*   **Font:** A clean, sans-serif font (e.g., Arial or Helvetica) for all labels and mathematical notations.\n\n### **2. Top Section: Overall Architecture**\nThis part shows the parallel processing of the two modalities.\n*   **Inputs:** \n    *   On the far left, an **RGB image** (e.g., a city street) is shown entering the **RGB Backbone**.\n    *   Parallel to it, an **Auxiliary input** (e.g., a Depth map or Thermal image) is shown entering the **Prompting Branch**.\n*   **Initialization (Section 3):**\n    *   A block labeled \"**Early RGB Blocks**\" (blue/frozen) is positioned at the start.\n    *   An arrow flows from the auxiliary input through a small \"Initial Projector\" into these early blocks to generate the **Initial Prompt ($e_0$)**.\n*   **Backbone Branch (Main Path):** \n    *   Consists of a vertical stack of **RGB Backbone Layers ($L_1, L_2, \\dots, L_n$)** in light blue.\n    *   Between each layer, there is a **summation circle ($\\oplus$)** where the output from the corresponding prompting module is added to the hidden state $h_i$.\n*   **Prompting Branch (Auxiliary Path):**\n    *   Consists of a parallel stack of **Mixed Prompting Modules ($P_1, P_2, \\dots, P_n$)** in light orange.\n    *   **Inter-branch connections:** For each stage $i$, a horizontal dashed arrow carries the backbone's hidden state $h_{i-1}$ to the prompting module $P_i$. The output of $P_i$ (the updated prompt $e_i$) is then fed back to the main branch's summation circle.\n*   **Prediction Head:** \n    *   At the bottom, the final features from the backbone enter a **Prediction Head** (orange/trainable).\n    *   The final output is a **Segmentation Mask**, color-coded by class.\n\n### **3. Bottom Section: Zoom-in on the Mixed Prompting Module (Section 4.2)**\nA detailed dashed box provides a \"Zoom In\" view of a single prompting module $P_i$.\n*   **Input Components:** Two input vectors enter the module: the **Backbone Feature ($h_{i-1}$)** and the **Previous Prompt ($e_{i-1}$)**.\n*   **Low-Rank Projection & Subspace Splitting:**\n    *   $h_{i-1}$ passes through a **Down-Projection layer ($W_{rgb}$)**. The output is visually split into **$n$ small parallel blocks**, representing multiple subspaces ($h^1, h^2, \\dots, h^n$).\n    *   $e_{i-1}$ passes through its own **Down-Projection ($W_x$)**, also resulting in a low-rank representation ($\\hat{e}_{i-1}$).\n*   **Mixing Mechanism:**\n    *   The $n$ subspaces of the RGB feature pass through a box labeled **\"Mixing Matrix ($M$)\"**. \n    *   Lines inside the box show cross-connections between the subspaces, illustrating how information is exchanged between them to produce the mixed feature **$\\hat{h}_{i-1}$**.\n*   **Alignment and Fusion:**\n    *   A **summation circle ($\\oplus$)** combines the mixed RGB features ($\\hat{h}_{i-1}$) and the prompt features ($\\hat{e}_{i-1}$). This represents the alignment of the two modalities.\n*   **Up-Projection:**\n    *   The fused vector passes through an **Up-Projection layer ($W_{up}$)** (orange/trainable), mapping it back to the original feature dimension $d$.\n    *   The final result is labeled as the **New Prompt ($e_i$)**, which is then used in the next backbone layer.\n\n### **4. Annotations and Legend**\n*   **Formula References:** Small text annotations near components refer to equations (e.g., \"$e_i = P_i(h_{i-1}, e_{i-1})$\" near the prompting module).\n*   **Legend Box:**\n    *   **Blue Block + Lock icon:** Frozen Pretrained Parameters.\n    *   **Orange Block + Flame icon:** Trainable Task-specific Parameters.\n    *   **$\\oplus$:** Element-wise Addition.\n    *   **Dashed Arrow:** Cross-modal Feature Interaction.",
+    "stylist_v2": "This diagram provides a technical overview of the **MixPrompt** framework for multimodal semantic segmentation. The layout follows a macro-to-micro structure, featuring a global architecture at the top and a detailed breakout of the prompting mechanism at the bottom.\n\n### **1. General Visual Style**\n*   **Canvas:** A clean, professional pure white background (`#FFFFFF`).\n*   **Color Palette:** A \"Soft Tech\" pastel scheme. **Frozen/Pretrained modules** use a pale ice blue fill (`#E6F3FF`) with a thin medium-blue border. **Trainable modules** use a pale peach fill (`#FFDAB9`) with a thin coral border.\n*   **Shapes:** All process modules are **rounded rectangles** (8px corner radius). Data tensors (images and feature maps) are represented as **3D isometric cuboids** to imply spatial dimensions.\n*   **Typography:** Labels for modules (e.g., \"RGB Backbone\") use a bold **Sans-Serif font** (Helvetica). Mathematical variables (e.g., \"$h_{i-1}$\", \"$e_i$\") use a **Serif font** (Times New Roman) and are italicized.\n*   **Connectors:** Primary data flow uses solid dark-gray orthogonal arrows (90-degree turns). Auxiliary/prompting paths use dashed charcoal arrows.\n*   **Status Icons:** Frozen modules include a small **\"❄️ Snowflake\"** icon in the top-right corner. Trainable modules include a small **\"🔥 Flame\"** icon.\n\n### **2. Top Section: Overall Architecture**\nThis section illustrates the parallel processing of modalities from left to right.\n*   **Input Stage:** \n    *   On the left, an **\"RGB image\"** is shown as a 3D cuboid with a photo-realistic city street thumbnail.\n    *   Below it, an **\"Auxiliary input\"** (Depth or Thermal) is shown as a 3D cuboid with a grayscale/heatmap thumbnail.\n*   **Initialization:**\n    *   The \"Auxiliary input\" points into an **\"Initial Projector\"** (peach), which connects to a block labeled **\"Early RGB Blocks\"** (ice blue).\n    *   The output of this interaction is labeled as the **Initial Prompt \"$e_0$\"**.\n*   **Main Processing Backbone:** \n    *   A horizontal sequence of ice blue blocks represents **\"RGB Backbone Layers\"** labeled \"$L_1, L_2, \\dots, L_n$\".\n    *   Each layer is preceded by a small white circle containing a gray **\"$\\oplus$\"** (summation operator) on the main flow line.\n*   **Prompting Branch:**\n    *   A parallel sequence of peach blocks represents **\"Mixed Prompting Modules\"** labeled \"$P_1, P_2, \\dots, P_n$\".\n    *   **Vertical Interactions:** At each stage $i$, a dashed arrow descends from the backbone to $P_i$ (carrying \"$h_{i-1}$\"). A dashed arrow then ascends from $P_i$ back to the backbone's summation circle (carrying the prompt \"$e_i$\").\n*   **Output Stage:** \n    *   The final output from $L_n$ enters a peach block labeled **\"Prediction Head\"**.\n    *   The final result is a 3D cuboid labeled **\"Segmentation Mask\"**, showing a color-coded semantic map.\n\n### **3. Bottom Section: Zoom-in on the Mixed Prompting Module**\nA large, light-cream (`#FFFDF0`) container with a thick gray dashed border encapsulates the internal logic of module $P_i$.\n*   **Inputs:** Two vectors enter from the left: **\"Backbone Feature ($h_{i-1}$)\"** and **\"Previous Prompt ($e_{i-1}$)\"**.\n*   **Low-Rank Projection:**\n    *   $h_{i-1}$ flows into a thin peach rectangle labeled **\"Down-Projection ($W_{rgb}$)\"**. The output is visually segmented into a horizontal array of $n$ small 3D slices, labeled **\"$h^1, h^2, \\dots, h^n$\"**.\n    *   $e_{i-1}$ flows into a peach rectangle labeled **\"Down-Projection ($W_x$)\"**, resulting in a single low-rank feature map **\"$\\hat{e}_{i-1}$\"**.\n*   **Mixing Mechanism:**\n    *   The $n$ slices ($h^j$) flow into a block labeled **\"Mixing Matrix ($M$)\"**. Inside this block, thin overlapping lines show cross-connections between the $n$ slices to signify information exchange.\n    *   The result is a combined feature labeled **\"Mixed RGB Feature ($\\hat{h}_{i-1}$)\"**.\n*   **Fusion & Up-Projection:**\n    *   A summation circle **\"$\\oplus$\"** combines $\\hat{h}_{i-1}$ and $\\hat{e}_{i-1}$.\n    *   The combined signal enters a final peach rectangle labeled **\"Up-Projection ($W_{up}$)\"**.\n    *   The final output on the right is labeled **\"New Prompt ($e_i$)\"**.\n\n### **4. Annotations and Legend**\n*   **Math Annotation:** Centered between the two sections, the formula **\"$h_i = L_i(h_{i-1} + W_{up}(\\hat{h}_{i-1} + \\hat{e}_{i-1}))$\"** is displayed in Serif font.\n*   **Legend Box (Bottom Right):**\n    *   `[Ice Blue Block + ❄️]` : \"Frozen Pretrained Parameters\"\n    *   `[Peach Block + 🔥]` : \"Trainable Task-specific Parameters\"\n    *   `[$\\oplus$]` : \"Element-wise Addition\"\n    *   `[Dashed Arrow]` : \"Cross-modal Feature Interaction\""
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V3_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "win",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V4_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "loss",
+     "conciseness": "tie",
+     "aesthetics": "loss"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    }
+   },
+   "leak_counts": {
+    "V0": 4,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 1,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_80",
+   "category": "vision_perception",
+   "refs": [
+    "ref_88",
+    "ref_178",
+    "ref_114",
+    "ref_281",
+    "ref_234",
+    "ref_140",
+    "ref_219",
+    "ref_35",
+    "ref_180",
+    "ref_241"
+   ],
+   "descriptions": {
+    "planner": "The figure illustrates a horizontal pipeline on a pure white background, transitioning from input frames to the final Confidence Propagation Volume (CPV). It employs thin gray connectors and a soft pastel color scheme: light blue for features, pale orange for the ECE module, and light green for confidence maps.\n\n### Overall Layout\nThe flow proceeds from left to right. On the far left, three sets of stereo pairs (Low, Medium, and High Contrast) serve as inputs. The top half of the diagram details the **Energy-Guided Confidence Estimation (ECE)** module, while the bottom half depicts the **Confidence Propagation Volume (CPV)** construction.\n\n### Energy-Guided Confidence Estimation (ECE)\n*   **Input Branches:** Three parallel rows representing LC, MC, and HC contrasts. Each row inputs an Event Frame and its corresponding Energy Map.\n*   **Feature Extraction:** Both inputs pass through **DCNv4 (Deformable Convolution)** blocks.\n*   **Fusion:** Energy map features ($F_E$) and speckle features ($F_S$) are combined via element-wise multiplication ($\\odot$), resulting in fused features ($F_{SE1}, F_{SE2}, F_{SE3}$).\n*   **Joint Estimation:** These three features enter a \"Joint Confidence Estimator\" block with a residual structure.\n*   **Output:** Three distinct, heat-map-styled **Confidence Maps** ($C_0, C_1, C_2$), where high-quality regions are brighter.\n\n### Confidence Propagation Volume (CPV) Construction\n*   **Feature Extraction:** The original left and right frames are processed by weight-sharing feature encoders to produce Left Features ($F_L$) and Right Features ($F_R$).\n*   **Confidence Weighting:**\n    *   **Left Path:** The Confidence Maps ($C$) are expanded and multiplied ($\\odot$) with $F_L$ to generate weighted features ($\\tilde{F}_L$).\n    *   **Right Path:** The Confidence Maps are propagated along the disparity dimension and multiplied with $F_R$ to generate weighted features ($\\tilde{F}_R$).\n*   **Refinement:** Both weighted features pass through a **$1 \\times 1$ Convolutional Fusion** block to reorganize channels and reduce redundancy.\n*   **Disparity Matching:** The refined left and right features enter a **Disparity Search** operation.\n*   **Final Output:** A 3D volume icon representing the **Confidence Propagation Volume (CPV)**, which serves as the basis for final disparity estimation.\n\n### Visual Elements\n*   **Mathematical Symbols:** $\\odot$ for element-wise multiplication and $\\otimes$ for concatenation are placed at merge points.\n*   **Legend:** Small icons in the bottom corner define \"DCNv4,\" \"$1 \\times 1$ Conv,\" and \"Disparity Search.\"\n*   **Labels:** All data tensors are labeled with dimensions like $C \\times H \\times W$ in a small, clean font.",
+    "stylist_v2": "The figure illustrates a high-quality, professional horizontal pipeline for \"Confidence-Driven Stereo Matching\" using a \"Soft Tech\" aesthetic. The diagram is organized on a pure white canvas with two distinct, large background zones (rounded rectangles, 15px radius) to separate the modular logic: a \"Pale Blue\" (`#E6F3FF`) top zone for the **Energy-Guided Confidence Estimation (ECE)** and a \"Mint Green\" (`#E0F2F1`) bottom zone for the **Confidence Propagation Volume (CPV)** construction.\n\n### Overall Layout and Connectors\nThe flow follows a precise left-to-right progression. Data paths are indicated by dark gray (`#546E7A`) orthogonal elbow connectors with a 1.5pt thickness. Mathematical operators, specifically \"$\\odot$\" (element-wise multiplication) and \"$\\otimes$\" (concatenation), are enclosed in small white circles with thin gray borders, placed at the intersections of flow lines.\n\n### Energy-Guided Confidence Estimation (ECE)\n*   **Input Stage:** On the far left, three sets of stereo pairs representing \"Low Contrast (LC)\", \"Medium Contrast (MC)\", and \"High Contrast (HC)\" are stacked vertically. Each input consists of an \"Event Frame\" and an \"Energy Map\" depicted as thin 3D isometric plates.\n*   **Feature Extraction:** Each input plate maps to a \"DCNv4 (Deformable Convolution)\" block, rendered as a soft \"Pale Orange\" (`#FFE0B2`) rounded rectangle (8px corner radius) with a subtle drop shadow.\n*   **Fusion Logic:** Features \"$F_E$\" and \"$F_S$\" converge at a \"$\\odot$\" operator. The resulting fused features \"$F_{SE1}$\", \"$F_{SE2}$\", and \"$F_{SE3}$\" (labeled in Serif Italic font) are shown as light blue 3D cuboids.\n*   **Joint Estimation:** These features enter a \"Joint Confidence Estimator\" block, a larger \"Salmon\" (`#FFCCBC`) rounded rectangle with a \"Residual Structure\" icon (a curved skip-connection arrow inside).\n*   **Output Maps:** The module outputs three \"Confidence Maps\" (\"$C_0$\", \"$C_1$\", \"$C_2$\"), displayed as high-resolution heatmaps on 3D isometric plates, where high-confidence regions glow in bright yellow and low-confidence regions are dark purple.\n\n### Confidence Propagation Volume (CPV) Construction\n*   **Feature Encoders:** The original \"Left Features ($F_L$)\" and \"Right Features ($F_R$)\" are extracted via two \"Weight-sharing Encoders,\" represented by two identical \"Light Blue\" (`#B3E5FC`) rounded rectangles.\n*   **Weighting Paths:**\n    *   **Left Path:** The Confidence Maps \"$C$\" are expanded (shown by a dashed expansion arrow) and meet \"$F_L$\" at a \"$\\odot$\" operator to produce weighted features \"$\\tilde{F}_L$\".\n    *   **Right Path:** A dashed gray line represents the propagation of \"$C$\" along the \"disparity dimension,\" meeting \"$F_R$\" at a \"$\\odot$\" operator to produce \"$\\tilde{F}_R$\".\n*   **Refinement & Matching:** Both weighted features pass through a slim, vertical \"1 x 1 Convolutional Fusion\" block (Pale Orange) and then into a \"Disparity Search\" block, depicted as a \"Deep Cyan\" (`#0097A7`) rounded rectangle.\n*   **Final Output:** The pipeline terminates at a large, semi-transparent 3D volume icon representing the \"Confidence Propagation Volume (CPV)\". This volume features internal voxel grids with a gradient texture transitioning from cyan to lime green.\n\n### Detailed Visual Elements\n*   **Typography:** All labels for modules (e.g., \"**DCNv4**\", \"**Disparity Search**\") use a bold Sans-Serif font. All mathematical variables (e.g., \"$C \\times H \\times W$\", \"$F_{SE1}$\") use a Serif Italic font.\n*   **Dimensions:** Small, clean text labels like \"$C \\times H \\times W$\" are placed adjacent to the cuboid tensors.\n*   **Legend:** A small legend box in the bottom-right corner, framed with a thin dashed border, contains icons for \"**DCNv4**\", \"**1 x 1 Conv**\", and \"**Disparity Search**\" to define their color-coded roles."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    },
+    "V2_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V3_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "V4_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "loss",
+     "readability": "tie",
+     "conciseness": "win",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "win",
+     "aesthetics": "win"
+    }
+   },
+   "leak_counts": {
+    "V0": 2,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  },
+  {
+   "id": "test_60",
+   "category": "vision_perception",
+   "refs": [
+    "ref_79",
+    "ref_98",
+    "ref_41",
+    "ref_34",
+    "ref_302",
+    "ref_295",
+    "ref_106",
+    "ref_287",
+    "ref_94",
+    "ref_211"
+   ],
+   "descriptions": {
+    "planner": "The figure should be organized into three distinct horizontal or grouped panels labeled **(a) DisMo Training**, **(b) Autoregressive Motion Transfer**, and **(c) High-Quality Motion Transfer**. The overall style is a clean technical diagram with a pure white background, utilizing soft pastel colors (light blue, light green, light orange) to distinguish between components. Trainable modules are marked with a small **fire icon**, while frozen/pre-trained modules are marked with a small **lock icon**.\n\n### (a) DisMo Training\nThis panel illustrates the joint learning of motion representation and frame reconstruction.\n- **Inputs**: On the left, a sequence of video frames $\\mathbf{X}$ (represented as a filmstrip) is shown. Above the frames, a label indicates \"Appearance & Geometric Augmentation\" with small icons representing rotation and brightness adjustment.\n- **Motion Extractor $\\mathcal{M}_\\theta$**: A rectangular box colored in light purple with a fire icon. It receives the augmented frames and a set of \"Motion Query Tokens $\\mathbf{Q}$\" (represented as small colored vertical bars).\n- **Motion Embeddings $\\mathbf{M}$**: The output of the extractor is shown as a sequence of small colored latent vectors labeled $\\mathbf{m}_1, \\dots, \\mathbf{m}_T$.\n- **Frame Generator $\\mathcal{F}_\\psi$**: A rectangular box colored in light orange with a fire icon. It has three incoming arrows: one from a specific motion embedding $\\mathbf{m}_t$, one from a source frame $\\mathbf{x}_t$, and one denoting the temporal distance $\\Delta_t$.\n- **Objective**: The generator outputs a predicted frame $\\hat{\\mathbf{x}}_{t+\\Delta_t}$. A dashed line connects this prediction and the ground truth future frame $\\mathbf{x}_{t+\\Delta_t}$ to a box labeled \"Flow Matching Loss $\\mathcal{L}_{FM}$\", which uses the equation $\\mathbf{u} = \\mathbf{z}_1 - \\mathbf{z}_0$ to represent the target flow.\n\n### (b) Autoregressive Motion Transfer\nThis panel demonstrates a lightweight inference method for transferring motion to a new image.\n- **Source Motion**: A sequence of motion embeddings $\\mathbf{M}$ (identical in style to panel a) is shown at the top.\n- **Process**: An initial target image (e.g., a photo of a person or object different from the training set) is fed into the frozen **Frame Generator $\\mathcal{F}_\\psi$** (now with a lock icon). \n- **Loop**: The process is shown as a recursive loop: the Frame Generator takes the current frame and the temporally corresponding motion embedding $\\mathbf{m}_t$ to produce the next frame. This is repeated, with the output frame becoming the input for the next step, labeled \"Autoregressive Inference.\"\n\n### (c) High-Quality Motion Transfer\nThis panel shows how the learned motion is used to guide a large-scale pre-trained video model.\n- **Mapping Network**: A motion sequence $\\mathbf{M}$ is first fed into a small trainable **Mapping Network** (light yellow box with fire icon) which expands the embeddings into a richer latent space.\n- **Pre-trained Video Model**: A large, central rectangular block representing a video generation backbone (e.g., a Diffusion Transformer). It is colored light blue and marked with a lock icon.\n- **LoRAdapters**: Inside the video model block, several smaller green vertical rectangles labeled \"**LoRAdapters**\" (with fire icons) are placed within the transformer layers. \n- **Conditioning Alignment**: Arrows originate from the mapped motion sequence and point into the LoRAdapters. To emphasize temporal alignment, specific tokens from the motion sequence at time $t$ are connected via thin lines to the corresponding temporal tokens within the backbone's processing blocks.\n- **Output**: The model takes a target image as a starting point and generates a \"High-Quality Video\" output, represented as a sequence of high-fidelity frames on the far right.\n\n### Formal Details:\n- **Arrows**: Solid black arrows for data flow; dashed arrows for loss calculation or iterative loops.\n- **Colors**: Trainable components ($\\mathcal{M}_\\theta, \\mathcal{F}_\\psi$, Mapping Net, LoRAdapters) use warm pastels (orange, purple, green). Frozen components use cool light blue.\n- **Typography**: LaTeX-style font for mathematical symbols ($\\mathcal{M}_\\theta, \\mathbf{x}_t, \\mathcal{F}_\\psi, \\mathbf{z}_\\tau$).\n- **Consistency**: The visual representation of the \"Motion Embedding\" (colored vertical bar sequence) remains consistent across all three panels to signify it is the \"bridge\" token.",
+    "stylist_v2": "The diagram is organized into three horizontal panels: **\"(a) DisMo Training\"**, **\"(b) Autoregressive Motion Transfer\"**, and **\"(c) High-Quality Motion Transfer\"**. Each panel is encapsulated within a very light background \"zone\" to distinguish the stages: Panel (a) uses a pale lavender fill (`#F3E5F5`), Panel (b) uses a light cream fill (`#F5F5DC`), and Panel (c) uses a pale blue fill (`#E6F3FF`). All process modules are rounded rectangles with a 10px corner radius and thin 1pt grey borders.\n\n### (a) DisMo Training\n- **Input Sequence**: On the far left, a video sequence \"$\\mathbf{X}$\" is represented as a horizontal filmstrip of five frames with subtle rounded corners. Above this, a \"Appearance & Geometric Augmentation\" label is accompanied by a small 2D icon of a rotating arrow and a sun symbol.\n- **Motion Extractor \"$\\mathcal{M}_\\theta$\"**: A rounded rectangle with a medium purple fill (`#D1C4E9`) containing a small fire icon \"🔥\". It receives arrows from the augmented filmstrip and a set of \"Motion Query Tokens $\\mathbf{Q}$\" (visualized as a grid of eight thin, multi-colored vertical bars).\n- **Motion Embeddings \"$\\mathbf{M}$\"**: The output is a sequence of small vertical vector bars labeled \"$\\mathbf{m}_1, \\dots, \\mathbf{m}_T$\", colored in a soft gradient from teal to blue.\n- **Frame Generator \"$\\mathcal{F}_\\psi$\"**: A rounded rectangle with a light orange fill (`#FFE0B2`) and a fire icon \"🔥\". Three solid black orthogonal arrows enter this block: one from a specific motion embedding \"$\\mathbf{m}_t$\", one from a source frame \"$\\mathbf{x}_t$\" (pulled from the filmstrip), and one vertical arrow labeled \"$\\Delta_t$\".\n- **Objective**: The block outputs a predicted frame \"$\\hat{\\mathbf{x}}_{t+\\Delta_t}$\". A dashed black line connects this to a \"Flow Matching Loss $\\mathcal{L}_{FM}$\" box. Inside this box, the target flow is defined by the Serif math text \"$\\mathbf{u} = \\mathbf{z}_1 - \\mathbf{z}_0$\". A separate dashed line connects the ground truth frame \"$\\mathbf{x}_{t+\\Delta_t}$\" to the loss box.\n\n### (b) Autoregressive Motion Transfer\n- **Source Motion**: At the top, a sequence of \"Motion Embeddings $\\mathbf{M}$\" (identical in style to panel a) flows from left to right.\n- **Initial State**: A single \"Target Image\" (a high-fidelity thumbnail of a new object) is fed into the \"Frame Generator $\\mathcal{F}_\\psi$\".\n- **Frame Generator \"$\\mathcal{F}_\\psi$\"**: This rounded rectangle now has a cool greyish-blue fill (`#CFD8DC`) and a small padlock icon \"🔒\" to indicate it is frozen.\n- **Recursive Loop**: A curved dashed arrow labeled \"Autoregressive Inference\" loops from the output of \"$\\mathcal{F}_\\psi$\" back to its input. At each step, a new motion token \"$\\mathbf{m}_t$\" from the sequence above is consumed. The output is a growing filmstrip of generated frames.\n\n### (c) High-Quality Motion Transfer\n- **Mapping Network**: The motion sequence \"$\\mathbf{M}$\" enters a small rounded rectangle with a light yellow fill (`#FFF9C4`) and a fire icon \"🔥\" labeled \"Mapping Network\".\n- **Pre-trained Video Model**: A large, central rounded rectangle with an ice blue fill (`#B2EBF2`) and a large padlock icon \"🔒\". It represents a Diffusion Transformer backbone.\n- **LoRAdapters**: Inside the large blue block, three smaller green vertical rectangles labeled \"**LoRAdapters**\" with fire icons \"🔥\" are nested within horizontal layers. These adapters have a mint green fill (`#C8E6C9`).\n- **Conditioning Alignment**: Thin black orthogonal lines originate from the output of the \"Mapping Network\" and point directly into the \"LoRAdapters\". To show temporal correspondence, thin lines link specific motion tokens \"$\\mathbf{m}_t$\" to specific internal processing blocks within the video model.\n- **Output**: The model takes a \"Target Image\" as input and generates a \"High-Quality Video\", shown as a series of four high-resolution, vibrant frame thumbnails on the far right.\n\n### Formal Visual Attributes:\n- **Arrows**: Data flow uses solid black 1pt lines with arrowhead tips. Auxiliary flows, loops, and loss connections use 1pt dashed black lines. All turns are right-angled (orthogonal).\n- **Typography**: Labels for components (e.g., \"Mapping Network\", \"LoRAdapters\") use **Sans-Serif Bold**. All mathematical variables and symbols (e.g., \"$\\mathcal{M}_\\theta, \\mathbf{x}_t, \\mathcal{F}_\\psi, \\mathbf{z}_\\tau, \\mathbf{m}_t$\") use **Serif Italic** LaTeX-style font.\n- **Consistency**: The \"Motion Embedding\" sequence of vertical bars is visually identical in color and shape across all three panels.\n- **Background**: Pure white canvas background behind the three colored zones. No heavy black outlines; borders are soft grey (`#CCCCCC`)."
+   },
+   "pairs": {
+    "V1_vs_V0": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V2_vs_V0": {
+     "overall": "win",
+     "faithfulness": "win",
+     "readability": "win",
+     "conciseness": "loss",
+     "aesthetics": "tie"
+    },
+    "V2_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "win",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V3_vs_V1": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "V4_vs_V1": {
+     "overall": "loss",
+     "faithfulness": "loss",
+     "readability": "loss",
+     "conciseness": "loss",
+     "aesthetics": "loss"
+    },
+    "nb21_1k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb21_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "win",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    },
+    "nb21_2k_vs_nb2_1k": {
+     "overall": "tie",
+     "faithfulness": "tie",
+     "readability": "tie",
+     "conciseness": "tie",
+     "aesthetics": "tie"
+    }
+   },
+   "leak_counts": {
+    "V0": 0,
+    "V1": 0,
+    "V2": 0,
+    "V3": 0,
+    "V4": 0,
+    "nb21_1k": 0,
+    "nb21_2k": 0
+   }
+  }
+ ]
+}

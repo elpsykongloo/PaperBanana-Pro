@@ -206,6 +206,10 @@ paperbanana viewer evolution   # 查看流程演化
 paperbanana viewer eval        # 查看带参考结果的评估
 ```
 
+### 评估工具 — 改动前后按同一口径对比
+
+`scripts/eval/` 提供检索有用度评估、整链测量（各阶段耗时与费用、逐轮成图导出）、成图成对盲评和 Critic 筛查，并附带检索与生图提示的基准数据。用法见 [`scripts/eval/README.md`](scripts/eval/README.md)。真实调用需要环境变量 `GOOGLE_API_KEY`。
+
 ---
 
 ## 🏗️ 架构
@@ -230,6 +234,7 @@ PaperBanana-Pro/
 ├── agents/          # 多 Agent 阶段实现
 ├── configs/         # 模型与 API Key 配置
 ├── data/            # 数据集目录
+├── scripts/eval/    # 评估工具与基准数据
 ├── visualize/       # Streamlit Viewer
 ├── cli.py           # 全局命令入口
 ├── demo.py          # GUI 主程序
