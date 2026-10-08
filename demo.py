@@ -38,6 +38,7 @@ import sys
 import os
 from datetime import datetime
 from dataclasses import dataclass, field
+from functools import lru_cache
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
@@ -130,7 +131,7 @@ try:
         write_provider_api_key,
         write_provider_base_url,
     )
-    from utils.dataset_paths import DEFAULT_DATASET_NAME, get_reference_file_path
+    from utils.dataset_paths import DEFAULT_DATASET_NAME, get_reference_file_path, resolve_data_asset_path
     from utils.demo_job_store import (
         append_job_event,
         read_job_events,
@@ -141,10 +142,12 @@ try:
     )
     from utils.demo_task_utils import (
         build_evolution_stages,
+        collect_candidate_references,
         create_sample_inputs,
         find_final_stage_keys,
         get_task_ui_config,
         normalize_task_name,
+        summarize_retrieval_meta,
     )
     from utils import image_utils
     from utils.concurrency import compute_effective_concurrency
@@ -865,14 +868,13 @@ COMMON_ASPECT_RATIOS = [
 
 
 GEMINI_TEXT_MODELS = [
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3-flash-preview",
+    "gemini-3.8-flash",
+    "gemini-3.1-flash-lite",
 ]
 
 GEMINI_IMAGE_MODELS = [
-    "gemini-3-pro-image-preview",
-    "gemini-3.1-flash-image-preview",
+    "gemini-nano-banana-2.1",
+    "gemini-3-pro-image",
 ]
 
 CUSTOM_MODEL_OPTION = "自定义"
@@ -916,8 +918,8 @@ RETRIEVAL_NOTICE_LEVELS = {
     "none": "success",
 }
 RETRIEVAL_NOTICE_TEXT = {
-    "auto": "默认推荐。只依据你的图注或可视化目标来匹配参考，成本低、速度快，适合大多数试跑。",
-    "auto-full": "高精度模式。会把候选参考的完整内容交给模型判断，命中率更稳，但耗时和成本都会明显增加。",
+    "auto": "默认推荐。先按关键词在整个参考池里预筛，再把你的输入和候选参考的图注（diagram 另附缩略图）交给模型挑选；同一任务的所有候选共用一次检索。",
+    "auto-full": "高精度模式。预筛后把较少候选参考的完整正文交给模型判断，耗时和成本明显更高；同一任务的所有候选共用一次检索。",
     "curated": "固定参考集模式。使用你指定的 few-shot 配置，适合做复现实验、A/B 对照和开发调试。",
     "random": "随机样本模式。直接从参考池抽取示例，不额外调用检索推理，适合快速试跑。",
     "none": "纯生成模式。不加载任何参考样例，成本最低，适合先看基础出图效果。",
@@ -4567,6 +4569,12 @@ async def refine_image_with_nanoviz(
                                 temperature=1.0,
                                 max_output_tokens=8192,
                                 response_modalities=["IMAGE"],
+                                # 宽高比与分辨率必须经 ImageConfig 传入才会生效
+                                image_config=image_utils.build_gemini_image_config(
+                                    runtime_settings.image_model_name,
+                                    aspect_ratio,
+                                    image_size,
+                                ),
                             ),
                             max_attempts=max(2, int(max_attempts or 2)),
                             retry_delay=5,
@@ -5327,6 +5335,59 @@ def display_candidate_result(
                 st.write(cleaned_desc)
             else:
                 st.info("暂无描述")
+
+    render_candidate_references(
+        result,
+        task_name=task_name,
+        widget_key=f"{candidate_id}_{candidate_index}",
+    )
+
+
+@lru_cache(maxsize=512)
+def _load_reference_thumbnail(path_str: str, max_side: int = 360) -> bytes | None:
+    """参考图缩略图（JPEG 字节），避免把原图反复传给浏览器。"""
+    try:
+        with Image.open(path_str) as image:
+            image = image.convert("RGB")
+            image.thumbnail((max_side, max_side))
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=85)
+            return buffer.getvalue()
+    except (OSError, UnidentifiedImageError):
+        return None
+
+
+def render_candidate_references(result, *, task_name: str, widget_key: str) -> None:
+    """展示候选实际使用的参考样例与检索摘要。"""
+    references = collect_candidate_references(result)
+    meta_summary = summarize_retrieval_meta(result.get("retrieval_meta"))
+    if not references and not meta_summary:
+        return
+    with st.expander(f"📚 查看本候选使用的参考（{len(references)} 条）", expanded=False):
+        if meta_summary:
+            st.caption(meta_summary)
+        if not references:
+            st.info("本候选没有使用参考样例。")
+            return
+        show_thumbnails = st.checkbox("显示参考缩略图", value=False, key=f"show_reference_thumbnails_{widget_key}")
+        # 候选卡片可能很窄，按纵向列表展示，避免多列挤压文字
+        for reference in references:
+            if show_thumbnails:
+                image_path = resolve_data_asset_path(
+                    reference.get("path_to_gt_image"),
+                    task_name,
+                    dataset_name=result.get("dataset_name"),
+                    work_dir=REPO_ROOT,
+                )
+                thumbnail = _load_reference_thumbnail(str(image_path)) if image_path else None
+                if thumbnail:
+                    st.image(thumbnail, width="stretch")
+                else:
+                    st.caption("（未找到参考图）")
+            caption = reference.get("caption") or ""
+            if len(caption) > 100:
+                caption = caption[:100] + "…"
+            st.caption(f"**{reference['id']}** · {caption}" if caption else f"**{reference['id']}**")
 
 
 def render_plot_rerender_workspace() -> None:
@@ -6436,8 +6497,12 @@ def render_generation_sidebar_controls() -> dict:
         )
         retrieval_notice = RETRIEVAL_NOTICE_TEXT[retrieval_setting]
         if retrieval_setting == "auto":
+            retrieval_candidate_material = (
+                retrieval_target_label if task_name == "plot" else f"{retrieval_target_label}和缩略图"
+            )
             retrieval_notice = (
-                f"默认推荐。只把你的{retrieval_target_label}发给模型做参考匹配，成本低、速度快，适合大多数试跑。"
+                f"默认推荐。先按关键词在整个参考池里预筛，再把你的输入和候选参考的{retrieval_candidate_material}交给模型挑选；"
+                "同一任务的所有候选共用一次检索。"
             )
         st.caption(retrieval_notice)
 

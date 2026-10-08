@@ -18,11 +18,33 @@ Image utility functions for processing and converting images
 
 import base64
 import io
+from functools import lru_cache
 from PIL import Image
 
 from utils.log_config import get_logger
 
 logger = get_logger("ImageUtils")
+
+
+@lru_cache(maxsize=1024)
+def load_image_as_jpeg_base64(image_path: str, max_side: int, quality: int = 85) -> str:
+    """
+    读取图片文件，等比缩小到长边不超过 max_side，返回 JPEG base64。
+
+    透明背景铺白再转 JPEG，避免透明区域变成黑色。
+    """
+    with Image.open(image_path) as img:
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            rgba = img.convert("RGBA")
+            canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+            canvas.paste(rgba, mask=rgba.getchannel("A"))
+            rgb = canvas
+        else:
+            rgb = img.convert("RGB")
+    rgb.thumbnail((max_side, max_side))
+    buf = io.BytesIO()
+    rgb.save(buf, format="JPEG", quality=quality)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 def detect_image_mime_from_bytes(image_bytes: bytes) -> str:
@@ -102,6 +124,32 @@ def normalize_gemini_media_resolution(
         "4K": "MEDIA_RESOLUTION_HIGH",
     }
     return mapping.get(normalized, default_resolution)
+
+
+def gemini_image_model_supports_image_size(model_name: str) -> bool:
+    """flash-lite-image 系列只支持 1K，传 image_size 会被 API 以 400 拒绝。"""
+    return "lite-image" not in str(model_name or "").lower()
+
+
+def build_gemini_image_config(model_name: str, aspect_ratio: str, image_size: str):
+    """
+    构造 Gemini 的 ImageConfig，让宽高比与分辨率由 API 参数生效（仅写在提示词里不会生效）。
+    SDK 不提供 ImageConfig 时返回 None。
+    """
+    try:
+        from google.genai import types
+    except ImportError:
+        return None
+    image_config_cls = getattr(types, "ImageConfig", None)
+    if image_config_cls is None:
+        return None
+    kwargs = {}
+    if str(aspect_ratio or "").strip():
+        kwargs["aspect_ratio"] = str(aspect_ratio).strip()
+    normalized_size = normalize_gemini_image_size(image_size, default_size="")
+    if normalized_size and gemini_image_model_supports_image_size(model_name):
+        kwargs["image_size"] = normalized_size
+    return image_config_cls(**kwargs) if kwargs else None
 
 
 def build_gemini_image_prompt(prompt_text: str, aspect_ratio: str, image_size: str) -> str:

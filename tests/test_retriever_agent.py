@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from agents.retriever_agent import RetrieverAgent
+from PIL import Image
+
+from agents.retriever_agent import VISUAL_RERANK_SYSTEM_PROMPT, RetrieverAgent
 from utils.config import ExpConfig
 
 
@@ -217,8 +219,12 @@ class RetrieverAgentTest(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(result["top10_references"], ["ref_hit"])
-        self.assertEqual([item["id"] for item in result["retrieved_examples"]], ["ref_hit"])
+        # 模型只选了 1 个，按预筛顺序补齐（参考池只有 2 条）
+        self.assertEqual(result["top10_references"], ["ref_hit", "ref_miss"])
+        self.assertEqual([item["id"] for item in result["retrieved_examples"]], ["ref_hit", "ref_miss"])
+        self.assertEqual(result["retrieval_meta"]["selected"], 1)
+        self.assertEqual(result["retrieval_meta"]["topped_up"], 1)
+        self.assertEqual(result["retrieval_meta"]["method"], "bm25+llm")
 
     def test_auto_retrieval_falls_back_when_model_returns_no_valid_ids(self):
         work_dir = self._build_work_dir()
@@ -256,6 +262,285 @@ class RetrieverAgentTest(unittest.TestCase):
 
         self.assertEqual(result["top10_references"], ["ref_first", "ref_second"])
         self.assertEqual([item["id"] for item in result["retrieved_examples"]], ["ref_first", "ref_second"])
+        self.assertEqual(result["retrieval_meta"]["fallback"], "shortlist_order")
+        self.assertEqual(result["retrieval_meta"]["invalid_ids"], ["missing_ref"])
+
+    def _write_diagram_pool(self, work_dir: Path, items: list[dict]) -> None:
+        diagram_dir = work_dir / "data" / "PaperBananaBench" / "diagram"
+        diagram_dir.mkdir(parents=True, exist_ok=True)
+        (diagram_dir / "ref.json").write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    def _filler_diagrams(count: int) -> list[dict]:
+        topics = ["protein folding", "weather forecasting", "speech codec", "graph partition", "robot grasping"]
+        return [
+            {
+                "id": f"ref_{idx}",
+                "visual_intent": f"Figure: pipeline for {topics[idx % len(topics)]} variant {idx}.",
+                "content": f"We study {topics[idx % len(topics)]} with a standard encoder.",
+            }
+            for idx in range(count)
+        ]
+
+    def test_prefilter_scores_entire_pool_without_cutoff(self):
+        work_dir = self._build_work_dir()
+        items = self._filler_diagrams(250)
+        items[230] = {
+            "id": "ref_late",
+            "visual_intent": "Figure 1: Overview of the hierarchical retrieval augmented critic loop for diagram synthesis.",
+            "content": "A hierarchical retrieval augmented critic loop refines diagram synthesis.",
+        }
+        self._write_diagram_pool(work_dir, items)
+        agent = self._build_agent(work_dir, task_name="diagram")
+
+        shortlist = agent._prefilter_candidate_pool(
+            {
+                "content": "We propose a hierarchical retrieval augmented critic loop for diagram synthesis.",
+                "visual_intent": "Overview of the retrieval augmented critic loop.",
+            },
+            agent.task_config,
+            lite=True,
+        )
+
+        self.assertEqual(shortlist[0]["id"], "ref_late")
+        self.assertEqual(len(shortlist), agent.task_config["lite_prefilter_limit"])
+
+    def test_auto_retrieval_tops_up_partial_selection_and_labels_candidates_by_id(self):
+        work_dir = self._build_work_dir()
+        self._write_diagram_pool(work_dir, self._filler_diagrams(50))
+        agent = self._build_agent(work_dir, task_name="diagram")
+        mock = AsyncMock(return_value=['{"top10_references":["ref_3","ref_7","ref_9999"]}'])
+
+        with patch("agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async", new=mock):
+            result = asyncio.run(
+                agent.process(
+                    {"candidate_id": 0, "content": "speech codec pipeline", "visual_intent": "Pipeline for speech codec."},
+                    retrieval_setting="auto",
+                )
+            )
+
+        ids = result["top10_references"]
+        self.assertEqual(ids[:2], ["ref_3", "ref_7"])
+        self.assertEqual(len(ids), 10)
+        self.assertEqual(len(set(ids)), 10)
+        meta = result["retrieval_meta"]
+        self.assertEqual(meta["selected"], 2)
+        self.assertEqual(meta["topped_up"], 8)
+        self.assertEqual(meta["invalid_ids"], ["ref_9999"])
+        prompt_text = mock.call_args.kwargs["contents"][0]["text"]
+        self.assertIn("Candidate Diagram [ref_3]:", prompt_text)
+        self.assertNotRegex(prompt_text, r"Candidate Diagram \d+:")
+
+    def test_concurrent_candidates_share_one_retrieval_call(self):
+        work_dir = self._build_work_dir()
+        self._write_diagram_pool(work_dir, self._filler_diagrams(30))
+        agent = self._build_agent(work_dir, task_name="diagram")
+
+        async def slow_response(**kwargs):
+            await asyncio.sleep(0.05)
+            return ['{"top10_references":["ref_1","ref_2"]}']
+
+        mock = AsyncMock(side_effect=slow_response)
+
+        async def run_candidates():
+            jobs = [
+                agent.process(
+                    {"candidate_id": idx, "content": "robot grasping pipeline with depth camera", "visual_intent": "Robot grasping."},
+                    retrieval_setting="auto",
+                )
+                for idx in range(3)
+            ]
+            return await asyncio.gather(*jobs)
+
+        with patch("agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async", new=mock):
+            results = asyncio.run(run_candidates())
+
+        self.assertEqual(mock.await_count, 1)
+        self.assertEqual(len({tuple(r["top10_references"]) for r in results}), 1)
+        self.assertEqual(sorted(r["retrieval_meta"]["shared"] for r in results), [False, True, True])
+        # 每个候选拿到独立的示例副本
+        results[0]["retrieved_examples"][0]["visual_intent"] = "mutated"
+        self.assertNotEqual(results[1]["retrieved_examples"][0]["visual_intent"], "mutated")
+
+    def test_chinese_query_is_rewritten_before_prefilter(self):
+        work_dir = self._build_work_dir()
+        items = self._filler_diagrams(60)
+        items[45] = {
+            "id": "ref_target",
+            "visual_intent": "Figure 2: Multi-agent retrieval augmented framework for academic illustration.",
+            "content": "Agents retrieve references and a critic refines the illustration.",
+        }
+        self._write_diagram_pool(work_dir, items)
+        agent = self._build_agent(work_dir, task_name="diagram")
+        prompts: list[str] = []
+
+        async def fake_llm(**kwargs):
+            text = kwargs["contents"][0]["text"]
+            prompts.append(text)
+            if "English keywords" in text:
+                return ["multi-agent, retrieval augmented, academic illustration, critic, framework"]
+            return ['{"top10_references":["ref_target"]}']
+
+        with patch(
+            "agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async",
+            new=AsyncMock(side_effect=fake_llm),
+        ):
+            result = asyncio.run(
+                agent.process(
+                    {
+                        "candidate_id": 0,
+                        "content": "我们提出一个多智能体框架，检索参考样例并由评审智能体迭代改进学术插图。",
+                        "visual_intent": "图 2：整体框架示意图。",
+                    },
+                    retrieval_setting="auto",
+                )
+            )
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("Candidate Diagram [ref_target]:", prompts[1])
+        self.assertEqual(result["top10_references"][0], "ref_target")
+        self.assertTrue(result["retrieval_meta"]["query_rewritten"])
+        self.assertNotIn("fallback", result["retrieval_meta"])
+
+    def test_chinese_query_without_rewrite_sends_all_captions(self):
+        work_dir = self._build_work_dir()
+        self._write_diagram_pool(work_dir, self._filler_diagrams(60))
+        agent = self._build_agent(work_dir, task_name="diagram")
+        prompts: list[str] = []
+
+        async def fake_llm(**kwargs):
+            text = kwargs["contents"][0]["text"]
+            prompts.append(text)
+            if "English keywords" in text:
+                return ["Error"]
+            return ['{"top10_references":["ref_59"]}']
+
+        with patch(
+            "agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async",
+            new=AsyncMock(side_effect=fake_llm),
+        ):
+            result = asyncio.run(
+                agent.process(
+                    {"candidate_id": 0, "content": "我们提出一种新的方法。", "visual_intent": "图 1：方法示意图。"},
+                    retrieval_setting="auto-full",
+                )
+            )
+
+        meta = result["retrieval_meta"]
+        self.assertEqual(meta["fallback"], "no_query_tokens_all_captions")
+        self.assertEqual(meta["shortlist_size"], 60)
+        self.assertEqual(meta["mode"], "lite")
+        self.assertIn("Candidate Diagram [ref_59]:", prompts[-1])
+        self.assertNotIn("Methodology section: We study", prompts[-1])
+        self.assertEqual(result["top10_references"][0], "ref_59")
+
+
+    def _write_diagram_pool_with_images(self, work_dir: Path, count: int) -> list[dict]:
+        items = self._filler_diagrams(count)
+        image_dir = work_dir / "data" / "PaperBananaBench" / "diagram" / "images"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        for item in items:
+            Image.new("RGB", (1200, 600), (255, 255, 255)).save(image_dir / f"{item['id']}.png")
+            item["path_to_gt_image"] = f"images/{item['id']}.png"
+        self._write_diagram_pool(work_dir, items)
+        return items
+
+    def test_auto_diagram_selection_attaches_candidate_thumbnails(self):
+        work_dir = self._build_work_dir()
+        self._write_diagram_pool_with_images(work_dir, 50)
+        agent = self._build_agent(work_dir, task_name="diagram")
+        mock = AsyncMock(return_value=['{"top10_references":["ref_3","ref_8"]}'])
+
+        with patch("agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async", new=mock):
+            result = asyncio.run(
+                agent.process(
+                    {"candidate_id": 0, "content": "speech codec pipeline", "visual_intent": "Pipeline for speech codec."},
+                    retrieval_setting="auto",
+                )
+            )
+
+        self.assertEqual(mock.await_count, 1)
+        kwargs = mock.call_args.kwargs
+        self.assertEqual(kwargs["config"]["system_prompt"], VISUAL_RERANK_SYSTEM_PROMPT)
+        contents = kwargs["contents"]
+        image_parts = [part for part in contents if part["type"] == "image"]
+        shortlist_size = agent.task_config["lite_prefilter_limit"]
+        self.assertEqual(len(image_parts), shortlist_size)
+        self.assertEqual(image_parts[0]["source"]["media_type"], "image/jpeg")
+        self.assertIn("Candidate ref_", contents[1]["text"])
+        meta = result["retrieval_meta"]
+        self.assertEqual(meta["method"], "bm25+vlm")
+        self.assertEqual(meta["thumbnails"], shortlist_size)
+        self.assertEqual(result["top10_references"][:2], ["ref_3", "ref_8"])
+        self.assertEqual(len(result["top10_references"]), 10)
+
+    def test_thumbnail_selection_failure_falls_back_to_captions(self):
+        work_dir = self._build_work_dir()
+        self._write_diagram_pool_with_images(work_dir, 30)
+        agent = self._build_agent(work_dir, task_name="diagram")
+        mock = AsyncMock(side_effect=[RuntimeError("model does not accept images"), ['{"top10_references":["ref_4"]}']])
+
+        with patch("agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async", new=mock):
+            result = asyncio.run(
+                agent.process(
+                    {"candidate_id": 0, "content": "graph partition pipeline", "visual_intent": "Pipeline for graph partition."},
+                    retrieval_setting="auto",
+                )
+            )
+
+        self.assertEqual(mock.await_count, 2)
+        fallback_contents = mock.call_args_list[1].kwargs["contents"]
+        self.assertTrue(all(part["type"] == "text" for part in fallback_contents))
+        meta = result["retrieval_meta"]
+        self.assertEqual(meta["method"], "bm25+llm")
+        self.assertTrue(meta["visual_rerank_failed"])
+        self.assertEqual(result["top10_references"][0], "ref_4")
+
+    def test_auto_full_keeps_text_only_selection(self):
+        work_dir = self._build_work_dir()
+        self._write_diagram_pool_with_images(work_dir, 30)
+        agent = self._build_agent(work_dir, task_name="diagram")
+        mock = AsyncMock(return_value=['{"top10_references":["ref_2"]}'])
+
+        with patch("agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async", new=mock):
+            result = asyncio.run(
+                agent.process(
+                    {"candidate_id": 0, "content": "robot grasping pipeline", "visual_intent": "Pipeline for robot grasping."},
+                    retrieval_setting="auto-full",
+                )
+            )
+
+        self.assertEqual(mock.await_count, 1)
+        self.assertTrue(all(part["type"] == "text" for part in mock.call_args.kwargs["contents"]))
+        self.assertEqual(result["retrieval_meta"]["method"], "bm25+llm")
+
+
+    def test_numeric_ids_are_repaired_to_unique_shortlist_ids(self):
+        work_dir = self._build_work_dir()
+        self._write_diagram_pool_with_images(work_dir, 40)
+        agent = self._build_agent(work_dir, task_name="diagram")
+        mock = AsyncMock(return_value=['{"top10_references":["3","8","ref_3","9999"]}'])
+
+        with patch("agents.retriever_agent.generation_utils.call_evolink_text_with_retry_async", new=mock):
+            result = asyncio.run(
+                agent.process(
+                    {"candidate_id": 0, "content": "speech codec pipeline", "visual_intent": "Pipeline for speech codec."},
+                    retrieval_setting="auto",
+                )
+            )
+
+        self.assertEqual(result["top10_references"][:2], ["ref_3", "ref_8"])
+        meta = result["retrieval_meta"]
+        self.assertEqual(meta["repaired_ids"], 2)
+        self.assertEqual(meta["selected"], 2)
+        self.assertEqual(meta["invalid_ids"], ["9999"])
+        final_text = mock.call_args.kwargs["contents"][-1]["text"]
+        self.assertIn('Copy each id exactly as written after "Diagram ID:"', final_text)
+
+    def test_numeric_id_repair_skips_ambiguous_numbers(self):
+        ids, repaired = RetrieverAgent._repair_numeric_ids(["3", "7"], ["ref_3", "img_3", "ref_7"])
+        self.assertEqual(ids, ["3", "ref_7"])
+        self.assertEqual(repaired, 1)
 
 
 if __name__ == "__main__":

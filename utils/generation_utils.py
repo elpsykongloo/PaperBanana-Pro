@@ -62,11 +62,10 @@ model_config = load_model_config(REPO_ROOT)
 runtime_event_hook: Optional[Callable[[dict[str, Any]], None]] = None
 runtime_status_hook: Optional[Callable[[str], None]] = None
 
-DEFAULT_GEMINI_IMAGE_FALLBACK_MODEL = "gemini-3.1-flash-image-preview"
-DEFAULT_GEMINI_TEXT_FALLBACK_MODELS = (
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3-flash-preview",
-)
+DEFAULT_GEMINI_IMAGE_FALLBACK_MODEL = "gemini-nano-banana-2.1"
+# 文本兜底：Pro 或 Flash-Lite 主模型失败时改用 3.1 Flash-Lite，不悄悄换成更贵的 Flash 模型。
+# 不用 3.5 Flash-Lite：实测它当 Critic 时几乎总是回复“无需修改”，评审轮次形同关闭。
+DEFAULT_GEMINI_TEXT_FALLBACK_MODELS = ("gemini-3.1-flash-lite",)
 
 evolink_base_url = get_config_val(
     model_config,
@@ -678,28 +677,44 @@ async def call_evolink_image_with_retry_async(
 # ==================== 原始 Gemini 调用函数（保留兼容性） ====================
 
 def _convert_to_gemini_parts(contents):
-    """将通用内容列表转换为 Gemini 的 Part 对象列表"""
+    """
+    将通用内容列表转换为 Gemini 的 Part 对象列表。
+
+    图片支持两种格式：source 嵌套格式和 image_base64 直接格式（与 Evolink / OpenAI 分支一致）；
+    缺少 MIME 时按文件头识别。
+    """
     from google.genai import types
+    from utils.image_utils import detect_image_mime_from_bytes
+
     gemini_parts = []
     for item in contents:
         if item.get("type") == "text":
             gemini_parts.append(types.Part.from_text(text=item["text"]))
         elif item.get("type") == "image":
-            source = item.get("source", {})
+            source = item.get("source", {}) or {}
             if source.get("type") == "base64":
-                gemini_parts.append(
-                    types.Part.from_bytes(
-                        data=base64.b64decode(source["data"]),
-                        mime_type=source["media_type"],
-                    )
+                data_b64 = source.get("data", "")
+                mime_type = source.get("media_type")
+            else:
+                data_b64 = item.get("image_base64", "")
+                mime_type = item.get("mime_type")
+            if not data_b64:
+                logger.warning("⚠️  Gemini 请求跳过无数据的图片项")
+                continue
+            image_bytes = base64.b64decode(data_b64)
+            gemini_parts.append(
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime_type or detect_image_mime_from_bytes(image_bytes),
                 )
+            )
     return gemini_parts
 
 
 def _is_gemini_image_request(model_name: str, config: Any) -> bool:
     """判断当前是否为图像生成请求。"""
     lower_model = (model_name or "").lower()
-    if "image" in lower_model or "nanoviz" in lower_model:
+    if "image" in lower_model or "nanoviz" in lower_model or "nano-banana" in lower_model:
         return True
 
     modalities = getattr(config, "response_modalities", None)
@@ -737,7 +752,8 @@ def _build_gemini_model_ladder(
             for fallback_model in DEFAULT_GEMINI_TEXT_FALLBACK_MODELS:
                 _push(fallback_model)
         elif "flash-lite" in lower_model:
-            _push("gemini-3-flash-preview")
+            for fallback_model in DEFAULT_GEMINI_TEXT_FALLBACK_MODELS:
+                _push(fallback_model)
 
     return ladder
 
@@ -766,6 +782,12 @@ def _should_retry_gemini_forever(error_text: str) -> bool:
         "rate limit",
     ]
     return any(sig in lower for sig in retry_signals)
+
+
+def _is_gemini_model_not_found_error(error_text: str) -> bool:
+    """模型 ID 不存在或已下线（404 NOT_FOUND）：同一个模型重试没有意义。"""
+    lower = str(error_text or "").lower()
+    return "404" in lower and ("not_found" in lower or "is not found" in lower)
 
 
 def _is_gemini_non_retryable_error(error_text: str) -> bool:
@@ -804,11 +826,11 @@ def _stage_retry_budget(
     is_primary = lower_stage == lower_primary
 
     if is_image_request:
-        if "pro-image" in lower_stage:
+        if "pro-image" in lower_stage or "nano-banana-pro" in lower_stage:
             if cycle_index == 0:
                 return min(2, safe_requested)
             return 1 if cycle_index % 4 == 0 else 0
-        if "flash-image" in lower_stage:
+        if "flash-image" in lower_stage or "nano-banana" in lower_stage:
             return min(max(2, safe_requested), 4)
         return min(max(2, safe_requested), 3)
 
@@ -818,7 +840,7 @@ def _stage_retry_budget(
         return 1 if cycle_index % 3 == 0 else 0
     if "flash-lite" in lower_stage:
         return min(max(2, safe_requested), 3)
-    if "flash-preview" in lower_stage:
+    if "flash" in lower_stage:
         return min(max(2, safe_requested + 1), 4)
 
     if is_primary:
@@ -990,7 +1012,9 @@ def _get_gemini_request_timeout_seconds(is_image_request: bool) -> float:
             return max(float(env_val), 10.0)
         except ValueError:
             pass
-    return 45.0
+    # 思考模型（如 gemini-3.8-flash）的 Planner / Critic 请求实测平均约 30 秒，偶有超过 45 秒；
+    # 超时会被当作可重试错误反复重试，上限过低会让长输出一直被截断
+    return 120.0
 
 
 async def call_gemini_with_retry_async(
@@ -1145,6 +1169,10 @@ async def call_gemini_with_retry_async(
                     **parsed_meta,
                 }
 
+                if _is_gemini_model_not_found_error(error_text):
+                    # 模型不存在或已下线：不再重试这个模型，交给外层换下一个兜底模型
+                    break
+
                 if attempt_idx < stage_attempts - 1:
                     if _runtime_cancel_requested():
                         raise asyncio.CancelledError()
@@ -1168,10 +1196,13 @@ async def call_gemini_with_retry_async(
         return stage_results[:target_candidate_count], last_error_meta, len(stage_results) >= target_candidate_count
 
     final_error_meta: Dict[str, Any] = {}
+    unavailable_models: set[str] = set()
     cycle_index = 0
 
     while True:
         for ladder_index, stage_model_name in enumerate(model_ladder):
+            if stage_model_name in unavailable_models:
+                continue
             stage_requested_attempts = (
                 int(max_attempts)
                 if stage_model_name == model_name
@@ -1213,6 +1244,20 @@ async def call_gemini_with_retry_async(
             if stage_error_meta:
                 final_error_meta = stage_error_meta
                 error_text = str(stage_error_meta.get("error_text", ""))
+                if _is_gemini_model_not_found_error(error_text):
+                    unavailable_models.add(stage_model_name)
+                    _emit_runtime_event(
+                        level="WARNING",
+                        kind="warning",
+                        source="GenerationUtils",
+                        job_type="generation",
+                        provider="gemini",
+                        model=stage_model_name,
+                        status="fallback",
+                        message=f"Gemini 模型不存在或已下线：{stage_model_name}，改用下一个兜底模型",
+                        details=error_text,
+                    )
+                    continue
                 if _is_gemini_non_retryable_error(error_text):
                     _emit_runtime_event(
                         level="ERROR",
@@ -1237,6 +1282,24 @@ async def call_gemini_with_retry_async(
 
         if _runtime_cancel_requested():
             raise asyncio.CancelledError()
+
+        if model_ladder and all(name in unavailable_models for name in model_ladder):
+            message = f"Gemini 模型不存在或已下线：{', '.join(model_ladder)}。请在设置中更换模型。"
+            _emit_runtime_event(
+                level="ERROR",
+                kind="error",
+                source="GenerationUtils",
+                job_type="generation",
+                provider="gemini",
+                model=model_name,
+                status="failed",
+                error_code=final_error_meta.get("code"),
+                message=message,
+                details=final_error_meta.get("error_text", ""),
+            )
+            _safe_log(f"[Gemini] {message} ({error_context})")
+            result_list.extend(["Error"] * (target_candidate_count - len(result_list)))
+            return result_list
 
         last_error_text = str(final_error_meta.get("error_text", ""))
         if final_error_meta and not _should_retry_gemini_forever(last_error_text):

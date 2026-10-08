@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -144,4 +145,26 @@ def resolve_data_asset_path(
         seen.add(dedupe_key)
         if candidate_path.exists():
             return candidate_path
+        for variant_name in _filename_variants(candidate_path.name):
+            variant_path = candidate_path.with_name(variant_name)
+            if variant_path.exists():
+                return variant_path
     return None
+
+
+def _filename_variants(name: str) -> list[str]:
+    """
+    文件名的等价写法：Unicode NFC/NFD 规范化，以及 Windows 上解压未标记 UTF-8 的 zip 时
+    产生的 cp437 乱码名（例如 "inference‑time" 变成 "inferenceΓÇætime"）。
+    """
+    if not name or name.isascii():
+        return []
+    variants: list[str] = []
+    for value in (
+        unicodedata.normalize("NFC", name),
+        unicodedata.normalize("NFD", name),
+        name.encode("utf-8").decode("cp437"),
+    ):
+        if value != name and value not in variants:
+            variants.append(value)
+    return variants

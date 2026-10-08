@@ -64,6 +64,37 @@ class BaseAgentImageApiTest(unittest.TestCase):
                 getattr(captured["config"], "response_modalities", None),
                 ["IMAGE"],
             )
+            image_config = captured["config"].image_config
+            self.assertEqual(image_config.aspect_ratio, "16:9")
+            self.assertEqual(image_config.image_size, "4K")
+        finally:
+            generation_utils.call_gemini_with_retry_async = original
+
+    def test_gemini_lite_image_model_omits_unsupported_image_size(self):
+        captured = {}
+
+        async def fake_call_gemini_with_retry_async(**kwargs):
+            captured.update(kwargs)
+            return ["fake-image-b64"]
+
+        original = generation_utils.call_gemini_with_retry_async
+        generation_utils.call_gemini_with_retry_async = fake_call_gemini_with_retry_async
+        try:
+            exp_config = ExpConfig(
+                dataset_name="PaperBananaBench",
+                task_name="diagram",
+                provider="gemini",
+                work_dir=Path("."),
+            )
+            agent = _DummyAgent(
+                model_name="gemini-3.1-flash-lite-image",
+                system_prompt="System prompt",
+                exp_config=exp_config,
+            )
+            asyncio.run(agent.call_image_api(prompt="Draw a diagram.", aspect_ratio="21:9", image_resolution="2K"))
+            image_config = captured["config"].image_config
+            self.assertEqual(image_config.aspect_ratio, "21:9")
+            self.assertIsNone(image_config.image_size)
         finally:
             generation_utils.call_gemini_with_retry_async = original
 

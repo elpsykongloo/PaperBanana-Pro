@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -11,7 +12,7 @@ from utils.image_generation_options import (
 
 
 class GeminiRetryPolicyTest(unittest.TestCase):
-    def test_text_pro_models_fall_back_to_flash_lite_then_flash(self):
+    def test_text_pro_models_fall_back_to_flash_lite_models(self):
         ladder = generation_utils._build_gemini_model_ladder(
             "gemini-3.1-pro-preview",
             is_image_request=False,
@@ -19,12 +20,52 @@ class GeminiRetryPolicyTest(unittest.TestCase):
 
         self.assertEqual(
             ladder,
-            [
-                "gemini-3.1-pro-preview",
-                "gemini-3.1-flash-lite-preview",
-                "gemini-3-flash-preview",
-            ],
+            ["gemini-3.1-pro-preview", "gemini-3.1-flash-lite"],
         )
+
+    def test_flash_lite_falls_back_within_flash_lite_tier(self):
+        ladder = generation_utils._build_gemini_model_ladder("gemini-3.5-flash-lite", is_image_request=False)
+
+        self.assertEqual(ladder, ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"])
+        self.assertNotIn("gemini-3-flash-preview", ladder)
+
+    def test_default_flash_model_does_not_silently_downgrade(self):
+        ladder = generation_utils._build_gemini_model_ladder("gemini-3.8-flash", is_image_request=False)
+
+        self.assertEqual(ladder, ["gemini-3.8-flash"])
+
+    def test_text_timeout_leaves_room_for_thinking_models(self):
+        with patch.dict("os.environ", {"GEMINI_TEXT_TIMEOUT_SEC": ""}):
+            self.assertGreaterEqual(generation_utils._get_gemini_request_timeout_seconds(False), 120.0)
+        with patch.dict("os.environ", {"GEMINI_TEXT_TIMEOUT_SEC": "60"}):
+            self.assertEqual(generation_utils._get_gemini_request_timeout_seconds(False), 60.0)
+
+    def test_nano_banana_is_handled_as_flash_image_model(self):
+        config = SimpleNamespace(candidate_count=1, response_modalities=None)
+
+        self.assertTrue(generation_utils._is_gemini_image_request("gemini-nano-banana-2.1", config))
+        self.assertEqual(
+            generation_utils._build_gemini_model_ladder("gemini-nano-banana-2.1", is_image_request=True),
+            ["gemini-nano-banana-2.1"],
+        )
+        self.assertEqual(
+            generation_utils._stage_retry_budget(
+                stage_model_name="gemini-nano-banana-2.1",
+                primary_model_name="gemini-nano-banana-2.1",
+                is_image_request=True,
+                cycle_index=0,
+                requested_attempts=5,
+            ),
+            4,
+        )
+
+    def test_model_not_found_error_is_detected(self):
+        error_text = (
+            "404 NOT_FOUND. {'error': {'code': 404, 'message': 'models/gemini-x is not found for API version v1beta, "
+            "or is not supported for generateContent.', 'status': 'NOT_FOUND'}}"
+        )
+        self.assertTrue(generation_utils._is_gemini_model_not_found_error(error_text))
+        self.assertFalse(generation_utils._is_gemini_model_not_found_error("503 UNAVAILABLE high demand"))
 
     def test_image_pro_models_fall_back_to_flash_image(self):
         ladder = generation_utils._build_gemini_model_ladder(
@@ -70,6 +111,60 @@ class GeminiRetryPolicyTest(unittest.TestCase):
         )
 
         self.assertGreaterEqual(cooldown, 300.0)
+
+
+class _NotFoundGeminiModels:
+    """按模型名返回结果：dead_models 中的模型抛出 404。"""
+
+    def __init__(self, dead_models: set[str]):
+        self.dead_models = dead_models
+        self.calls: list[str] = []
+
+    async def generate_content(self, *, model, contents, config):
+        self.calls.append(model)
+        if model in self.dead_models:
+            raise RuntimeError(
+                f"404 NOT_FOUND. {{'error': {{'code': 404, 'message': 'models/{model} is not found for API version v1beta', "
+                "'status': 'NOT_FOUND'}}"
+            )
+        part = SimpleNamespace(text=f"ok from {model}")
+        return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))])
+
+
+class GeminiModelNotFoundTest(unittest.IsolatedAsyncioTestCase):
+    async def _call(self, models: _NotFoundGeminiModels, model_name: str) -> list[str]:
+        client = SimpleNamespace(aio=SimpleNamespace(models=models))
+        context = generation_utils.RuntimeContext(provider="gemini", api_key="key", gemini_client=client)
+        with generation_utils.use_runtime_context(context):
+            return await asyncio.wait_for(
+                generation_utils.call_gemini_with_retry_async(
+                    model_name=model_name,
+                    contents=[{"type": "text", "text": "hello"}],
+                    config=SimpleNamespace(candidate_count=1, response_modalities=None),
+                    max_attempts=5,
+                    retry_delay=0,
+                    error_context="model-not-found",
+                ),
+                timeout=10,
+            )
+
+    async def test_retired_model_switches_to_next_fallback_without_retrying(self):
+        ladder = generation_utils._build_gemini_model_ladder("gemini-3.1-flash-lite-preview", is_image_request=False)
+        models = _NotFoundGeminiModels({ladder[0]})
+
+        result = await self._call(models, ladder[0])
+
+        self.assertEqual(result, [f"ok from {ladder[1]}"])
+        self.assertEqual(models.calls, ladder[:2])
+
+    async def test_all_models_missing_returns_error_instead_of_retrying_forever(self):
+        ladder = generation_utils._build_gemini_model_ladder("gemini-3.1-flash-lite-preview", is_image_request=False)
+        models = _NotFoundGeminiModels(set(ladder))
+
+        result = await self._call(models, ladder[0])
+
+        self.assertEqual(result, ["Error"])
+        self.assertEqual(models.calls, ladder)
 
 
 class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import unittest
 
 from utils import generation_utils
@@ -129,6 +130,25 @@ class GenerationUtilsRuntimeContextTest(unittest.TestCase):
         results = asyncio.run(run_once())
 
         self.assertEqual(results, ["result-a"])
+
+    def test_gemini_parts_keep_both_image_formats(self):
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).decode("utf-8")
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 16).decode("utf-8")
+
+        parts = generation_utils._convert_to_gemini_parts(
+            [
+                {"type": "text", "text": "hello"},
+                {"type": "image", "source": {"type": "base64", "data": jpeg_b64, "media_type": "image/jpeg"}},
+                {"type": "image", "image_base64": png_b64},
+                {"type": "image", "image_base64": ""},
+            ]
+        )
+
+        self.assertEqual(len(parts), 3)
+        self.assertEqual(parts[0].text, "hello")
+        self.assertEqual(parts[1].inline_data.mime_type, "image/jpeg")
+        self.assertEqual(parts[2].inline_data.mime_type, "image/png")
+        self.assertEqual(parts[2].inline_data.data, base64.b64decode(png_b64))
 
     def test_close_runtime_context_skips_unowned_provider(self):
         provider = _DummyEvolinkProvider()
