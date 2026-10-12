@@ -118,7 +118,10 @@ def jpeg_bytes(path: Path, max_side: int) -> bytes:
     image.thumbnail((max_side, max_side))
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=88)
-    cached.write_bytes(buf.getvalue())
+    # 先写临时文件再改名：多个评估进程并发时，不会读到写了一半的缓存
+    tmp = cached.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_bytes(buf.getvalue())
+    os.replace(tmp, cached)
     return buf.getvalue()
 
 
@@ -132,14 +135,15 @@ def image_part(path: Path, max_side: int = 1024):
 
 
 async def gen_text(client, model: str, parts: list, *, system: str | None = None, temperature: float = 0.0,
-                   json_mode: bool = False, attempts: int = 4) -> str:
-    """简单重试、不换模型，保证同一实验内各组条件一致。"""
+                   json_mode: bool = False, thinking_level: str | None = None, attempts: int = 4) -> str:
+    """简单重试、不换模型，保证同一实验内各组条件一致。thinking_level 为 None 时用模型默认思考量。"""
     from google.genai import types
 
     config = types.GenerateContentConfig(
         system_instruction=system,
         temperature=temperature,
         response_mime_type="application/json" if json_mode else None,
+        thinking_config=types.ThinkingConfig(thinking_level=thinking_level) if thinking_level else None,
     )
     last: Exception | None = None
     for attempt in range(attempts):

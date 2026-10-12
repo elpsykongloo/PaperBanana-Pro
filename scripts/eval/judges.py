@@ -93,7 +93,8 @@ async def leak_check(client, item: dict, image: Path, semaphore: asyncio.Semapho
     parts = [f"Intended figure caption: {str(item['visual_intent'])[:600]}\nMethod excerpt: {str(item['content'])[:3000]}\n\n"
              "Generated figure:", image_part(image, 1536), LEAK_PROMPT]
     async with semaphore:
-        text = await gen_text(client, LEAK_JUDGE_MODEL, parts, temperature=0.0, json_mode=True)
+        # 默认思考量下 3-flash 每次要想约 4 万 token（40 张图约 $5），列文字不需要深想
+        text = await gen_text(client, LEAK_JUDGE_MODEL, parts, temperature=0.0, json_mode=True, thinking_level="low")
     obj = parse_json(text)
     if not isinstance(obj, dict):
         return {"leaked_text": [], "count": 0}
