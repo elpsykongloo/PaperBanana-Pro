@@ -1,8 +1,10 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from scripts.eval import common, retrieval_eval
+from scripts.eval import common, retrieval_eval, round_select
 from scripts.eval.common import BASELINE_DIR, combine_pairwise, load_json, mean_score, paired_bootstrap_ci
 
 
@@ -25,6 +27,17 @@ class EvalStatsTest(unittest.TestCase):
         self.assertEqual(combine_pairwise({"overall": "A"}, {"overall": "A"}, "overall"), "tie")
         self.assertEqual(combine_pairwise({"overall": "A"}, {"overall": "Tie"}, "overall"), "win")
         self.assertEqual(combine_pairwise(None, {}, "overall"), "tie")
+
+    def test_round_dirs_carry_forward_after_early_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            for field, data in (("target_diagram_desc0", b"r0"), ("target_diagram_critic_desc0", b"r1")):
+                (run / field).mkdir()
+                (run / field / "x.png").write_bytes(data)
+            chains = round_select.build_round_dirs(run, [{"id": "x"}, {"id": "no_image"}], n_rounds=3)
+
+            self.assertEqual(list(chains), ["x"])
+            self.assertEqual([(run / "rounds" / f"r{k}" / "x.png").read_bytes() for k in range(4)], [b"r0", b"r1", b"r1", b"r1"])
 
     def test_call_cost_prices_image_tokens_separately(self):
         call = {"model": "gemini-nano-banana-2.1", "image": True, "in": 1000, "out": 3000, "image_tokens": 1680, "thoughts": 500}

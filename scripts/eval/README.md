@@ -21,6 +21,11 @@ $env:GOOGLE_API_KEY = "<你的 key>"
 | `python -m scripts.eval.pipeline_measure --n 3 --include-zh --leak-check` | 整链跑若干条：各阶段的模型、耗时（含最长）、token、费用；每一轮成图导出到 `<输出目录>/<字段名>/<id>.png` | 每条约 $0.4（3.8 Flash、2K、3 轮 Critic） |
 | `python -m scripts.eval.pairwise_eval --x <目录> --y <目录> [--leak-check]` | 两组同名成图的成对盲评（gemini-3.1-pro，看原图，两种顺序都胜才算胜），可选检查非内容文字 | 每条约 $0.05–0.1 |
 | `python -m scripts.eval.critic_probe --run <pipeline 输出目录> --models a,b` | 换文本模型前检查它当 Critic 时会不会总回"无需修改" | 很少 |
+| `python -m scripts.eval.critic_detect inject/critique/judge` | 在第 0 轮图上制造四类已知错误（拼写、标签、缺组件、箭头反向），比较各版 Critic 的检出率，并核查无错图上的内容类意见是否属实 | 20 条约 $13 |
+| `python -m scripts.eval.round_select --run <pipeline 输出目录>` | 整理各轮成图为 `rounds/r0…rN`（提前结束时沿用上一张），并让模型（不看原图）挑出最好的一轮放到 `rounds/selected` | 20 条约 $0.2 |
+| `python -m scripts.eval.critic_variants --run <pipeline 输出目录> --variants base,minimal,keep` | 从同一张第 0 轮图出发，用改过提示的 Critic 重跑评审-重画，比较修改方式；`base` 重跑用于估计随机差异 | 每方案 20 条约 $1.9 |
+| `python -m scripts.eval.coverage_eval --dirs a,b` | 内容清单覆盖率：从正文抽出必须出现的组件与连接，逐张图核对 | 每目录 20 条约 $0.4 |
+| `python -m scripts.eval.review_page build/agree` | 把成对盲评抽样做成离线网页供人工复核，并计算人与评审的一致率 | 免费 |
 
 常见组合：
 
@@ -50,5 +55,6 @@ $env:GOOGLE_API_KEY = "<你的 key>"
 注意：
 
 - 改了评审提示或评审模型后，新结果不能与基准直接比较。
+- 成对盲评两种顺序的判决约三分之一不一致（140 对中 93 对两次一致），所以只认两种顺序合并后的结果；同一提示重跑一次，20 条里就可能出现 5 胜 9 负的差异，单次比较相差 4–5 条以内不要下结论。
 - 补评的参考与原有参考不在同一批评审里。
 - 样本量小（16–80 条），结论用于定方向。
