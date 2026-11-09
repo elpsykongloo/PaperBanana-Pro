@@ -340,7 +340,12 @@ def build_openai_image_request_params(
         payload["background"] = options.background
         payload["output_format"] = options.output_format
         if capabilities.supports_moderation:
-            payload["moderation"] = options.moderation
+            if edit:
+                # The pinned OpenAI SDK lacks a named moderation argument on edit.
+                # extra_body preserves the API option without requiring an SDK upgrade.
+                payload["extra_body"] = {"moderation": options.moderation}
+            else:
+                payload["moderation"] = options.moderation
     if options.output_compression is not None:
         payload["output_compression"] = options.output_compression
     if edit and capabilities.supports_input_fidelity and options.input_fidelity != "auto":

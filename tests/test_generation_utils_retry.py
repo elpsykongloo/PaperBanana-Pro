@@ -478,6 +478,36 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent["image"]), 1)
         self.assertNotIn("input_fidelity", sent)
 
+    async def test_image_edit_moderation_works_with_installed_sdk(self):
+        import httpx
+        from openai import AsyncOpenAI
+
+        requests = []
+
+        async def handle(request):
+            requests.append(request)
+            return httpx.Response(200, json={
+                "created": 0, "data": [{"b64_json": "edited-image-b64"}]
+            })
+
+        async with AsyncOpenAI(
+            api_key="test-only", base_url="https://example.invalid/v1",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+        ) as client:
+            with patch.object(generation_utils, "get_openai_client", return_value=client):
+                result = await generation_utils.call_openai_image_generation_with_retry_async(
+                    model_name="gpt-image-2", prompt="polish this image",
+                    config={"moderation": "auto", "responses_fallback": "never"},
+                    contents=[{"type": "image", "source": {
+                        "type": "base64", "media_type": "image/png",
+                        "data": "ZmFrZS1pbWFnZQ==",
+                    }}], max_attempts=1, retry_delay=0,
+                )
+        self.assertEqual(result, ["edited-image-b64"])
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].url.path, "/v1/images/edits")
+        self.assertIn(b'name="moderation"\r\n\r\nauto', requests[0].content)
+
     async def test_openai_image_generation_does_not_retry_non_recoverable_errors(self):
         class _BadRequest(RuntimeError):
             status_code = 400
