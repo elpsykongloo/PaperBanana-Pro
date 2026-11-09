@@ -242,33 +242,21 @@ class BaseAgent(ABC):
                 error_context=error_context,
             )
 
-        if provider == "openai_compatible":
+        if provider in {"openai", "openai_compatible"}:
+            openai_image_config: Dict[str, Any] = {
+                "aspect_ratio": aspect_ratio,
+                "image_resolution": image_resolution,
+                **dict(image_generation_options or {}),
+            }
+            # 归一化后的图像参数里 responses_model 默认是空串，不能覆盖文本模型；
+            # 否则 Responses 兜底永远退回硬编码的默认模型。
+            openai_image_config["responses_model"] = str(
+                openai_image_config.get("responses_model") or ""
+            ).strip() or str(getattr(self.exp_config, "model_name", "") or "")
             return await generation_utils.call_openai_image_generation_with_retry_async(
                 model_name=_model,
                 prompt=prompt,
-                config={
-                    "aspect_ratio": aspect_ratio,
-                    "image_resolution": image_resolution,
-                    "responses_model": getattr(self.exp_config, "model_name", ""),
-                    **dict(image_generation_options or {}),
-                },
-                contents=_contents,
-                provider_type=provider,
-                max_attempts=max_attempts,
-                retry_delay=retry_delay,
-                error_context=error_context,
-            )
-
-        if provider == "openai":
-            return await generation_utils.call_openai_image_generation_with_retry_async(
-                model_name=_model,
-                prompt=prompt,
-                config={
-                    "aspect_ratio": aspect_ratio,
-                    "image_resolution": image_resolution,
-                    "responses_model": getattr(self.exp_config, "model_name", ""),
-                    **dict(image_generation_options or {}),
-                },
+                config=openai_image_config,
                 contents=_contents,
                 provider_type=provider,
                 max_attempts=max_attempts,

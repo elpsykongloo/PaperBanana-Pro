@@ -478,6 +478,8 @@ class ProviderConnectionsTest(unittest.TestCase):
         self.assertEqual(captured["provider_type"], "openai")
         self.assertNotEqual(captured["config"].get("background"), "transparent")
         self.assertEqual(captured["config"].get("output_format"), "png")
+        # 探针只验证连通性，用最低质量档节省费用
+        self.assertEqual(captured["config"].get("quality"), "low")
 
     def test_probe_connection_emits_stage_callbacks(self):
         connection = ProviderConnection(

@@ -77,6 +77,19 @@ class _FakeInteractiveStreamlit:
         self.html_calls.append({"body": body, "kwargs": dict(kwargs)})
         return None
 
+    def checkbox(self, label, value=False, key=None, **kwargs):
+        if key not in self.session_state:
+            self.session_state[key] = value
+        return self.session_state[key]
+
+    def slider(self, label, min_value=None, max_value=None, value=None, key=None, **kwargs):
+        if key not in self.session_state:
+            self.session_state[key] = value
+        return self.session_state[key]
+
+    def warning(self, *args, **kwargs):
+        return None
+
 
 class DemoModelInputTest(unittest.TestCase):
     def setUp(self):
@@ -86,6 +99,57 @@ class DemoModelInputTest(unittest.TestCase):
 
     def tearDown(self):
         demo.st = self.original_streamlit
+
+    def _render_openai_image_options(self, *, aspect_ratio, image_resolution, model="gpt-image-1.5"):
+        return demo.render_image_generation_option_controls(
+            provider_type="openai",
+            image_model_name=model,
+            aspect_ratio=aspect_ratio,
+            image_resolution=image_resolution,
+            widget_prefix="t",
+        )
+
+    def test_openai_size_follows_aspect_ratio_changes_but_keeps_manual_choice(self):
+        first = self._render_openai_image_options(aspect_ratio="16:9", image_resolution="2K")
+        self.assertEqual(first["size"], "1536x1024")
+
+        # 宽高比变化后，尺寸要跟着变（之前会一直停留在首次渲染的值）
+        changed = self._render_openai_image_options(aspect_ratio="9:16", image_resolution="2K")
+        self.assertEqual(changed["size"], "1024x1536")
+
+        # 输入不变时保留用户手选的尺寸
+        self.fake_streamlit.session_state["t_image_size"] = "1024x1024"
+        kept = self._render_openai_image_options(aspect_ratio="9:16", image_resolution="2K")
+        self.assertEqual(kept["size"], "1024x1024")
+
+        # 尺寸下拉框不再同时传 index，避免与 Session State 冲突
+        size_calls = [call for call in self.fake_streamlit.selectbox_calls if call["label"] == "OpenAI 输出尺寸"]
+        self.assertTrue(size_calls)
+        self.assertNotIn("index", size_calls[-1]["kwargs"])
+
+    def test_gpt_image_2_custom_size_follows_aspect_ratio(self):
+        first = self._render_openai_image_options(aspect_ratio="16:9", image_resolution="1K", model="gpt-image-2")
+        self.assertEqual(first["size"], "1536x864")
+        self.assertEqual(self.fake_streamlit.session_state["t_image_size"], "自定义像素尺寸")
+
+        changed = self._render_openai_image_options(aspect_ratio="1:1", image_resolution="2K", model="gpt-image-2")
+        self.assertEqual(changed["size"], "2048x2048")
+        self.assertEqual(self.fake_streamlit.session_state["t_image_size"], "2048x2048")
+
+    def test_gpt_image_2_custom_size_survives_hidden_text_input(self):
+        state = self.fake_streamlit.session_state
+        first = self._render_openai_image_options(aspect_ratio="16:9", image_resolution="1K", model="gpt-image-2")
+        self.assertEqual(first["size"], "1536x864")
+
+        # 用户改选预设尺寸：自定义输入框这一轮不渲染，真实 Streamlit 会删除它的状态
+        state["t_image_size"] = "1024x1024"
+        self._render_openai_image_options(aspect_ratio="16:9", image_resolution="1K", model="gpt-image-2")
+        del state["t_image_custom_size"]
+
+        # 再切回自定义：应恢复默认的 1536x864，而不是空值退回 auto
+        state["t_image_size"] = "自定义像素尺寸"
+        back = self._render_openai_image_options(aspect_ratio="16:9", image_resolution="1K", model="gpt-image-2")
+        self.assertEqual(back["size"], "1536x864")
 
     def test_custom_model_value_initializes_selector_and_text_buffer(self):
         self.fake_streamlit.session_state["model_value"] = "vendor/custom-text-model"

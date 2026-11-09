@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -132,6 +133,24 @@ CAPABILITY_PRESETS: dict[str, ImageModelCapabilities] = {
         transparent_supported=True,
         legacy_resolution_options=("auto", "1K", "2K"),
     ),
+    # gpt-image-1-mini 与 gpt-image-1 能力相同，但官方说明 mini 的 input_fidelity 只支持默认的 low，
+    # 因此不暴露该选项、也不发送。
+    "gpt-image-1-mini": ImageModelCapabilities(
+        provider_type="openai",
+        model_family="gpt-image-1-mini",
+        size_options=GPT_IMAGE_1_SIZES,
+        quality_options=("auto", "low", "medium", "high"),
+        background_options=("auto", "opaque", "transparent"),
+        output_format_options=("png", "jpeg", "webp"),
+        supports_output_compression=True,
+        supports_moderation=True,
+        supports_input_fidelity=False,
+        supports_stream=True,
+        supports_partial_images=True,
+        supports_edit=True,
+        transparent_supported=True,
+        legacy_resolution_options=("auto", "1K", "2K"),
+    ),
     "dall-e-3": ImageModelCapabilities(
         provider_type="openai",
         model_family="dall-e-3",
@@ -165,6 +184,15 @@ ASPECT_RATIO_SIZE_MAP = {
     "9:16": {"1K": "1024x1536", "2K": "1152x2048", "4K": "2160x3840"},
     "4:5": {"1K": "1024x1280", "2K": "1280x1600", "4K": "2304x2880"},
     "5:4": {"1K": "1280x1024", "2K": "1600x1280", "4K": "2880x2304"},
+}
+
+# 支持自定义像素尺寸的模型（gpt-image-2）用更准确的宽高比；
+# 上表的这几档是为固定尺寸模型取的近似值（如 16:9@1K 给的是 3:2 的 1536x1024）。
+# 取值均满足 16 的倍数、单边 ≤3840、长短边比 ≤3、总像素 655,360~8,294,400。
+CUSTOM_SIZE_ASPECT_RATIO_OVERRIDES = {
+    "16:9": {"1K": "1536x864"},
+    "9:16": {"1K": "864x1536"},
+    "21:9": {"1K": "1680x720", "2K": "2352x1008", "4K": "3360x1440"},
 }
 
 
@@ -221,6 +249,8 @@ def get_image_model_capabilities(provider_type: str, model_name: str = "") -> Im
         return CAPABILITY_PRESETS[provider]
     if model.startswith("gpt-image-2"):
         return CAPABILITY_PRESETS["gpt-image-2"]
+    if model.startswith("gpt-image-1-mini"):
+        return CAPABILITY_PRESETS["gpt-image-1-mini"]
     if model.startswith("gpt-image-1") or model == "chatgpt-image-latest":
         return CAPABILITY_PRESETS["gpt-image-1"]
     if model.startswith("dall-e-3"):
@@ -234,19 +264,52 @@ def get_image_model_capabilities(provider_type: str, model_name: str = "") -> Im
     return CAPABILITY_PRESETS["evolink"]
 
 
+def _nearest_fixed_size(aspect_ratio: str, size_options: tuple[str, ...]) -> str:
+    """在固定尺寸里选宽高比最接近的一档；同样接近时取像素更多的。"""
+    try:
+        width_text, height_text = str(aspect_ratio or "").split(":", 1)
+        target = float(width_text) / float(height_text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        target = 1.0
+    if target <= 0:
+        target = 1.0
+    best = ""
+    best_key: tuple[float, int] | None = None
+    for option in size_options:
+        try:
+            width_text, height_text = option.lower().split("x", 1)
+            width, height = int(width_text), int(height_text)
+        except ValueError:
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        key = (abs(math.log((width / height) / target)), -(width * height))
+        if best_key is None or key < best_key:
+            best, best_key = option, key
+    return best
+
+
 def resolve_legacy_size(aspect_ratio: str, image_resolution: str, capabilities: ImageModelCapabilities) -> str:
     resolution = str(image_resolution or "").strip()
     if resolution in capabilities.size_options:
         return resolution
     if resolution.upper() in {"1K", "2K", "4K"}:
-        mapped = ASPECT_RATIO_SIZE_MAP.get(
-            str(aspect_ratio or "").strip(),
-            ASPECT_RATIO_SIZE_MAP["1:1"],
-        ).get(resolution.upper(), "")
+        ratio_key = str(aspect_ratio or "").strip()
+        mapped = ""
+        if capabilities.supports_custom_size:
+            mapped = CUSTOM_SIZE_ASPECT_RATIO_OVERRIDES.get(ratio_key, {}).get(resolution.upper(), "")
+        if not mapped:
+            mapped = ASPECT_RATIO_SIZE_MAP.get(ratio_key, ASPECT_RATIO_SIZE_MAP["1:1"]).get(resolution.upper(), "")
         if mapped in capabilities.size_options or (
             capabilities.supports_custom_size and _is_valid_gpt_image_2_size(mapped)
         ):
             return mapped
+        # 官方固定尺寸模型（gpt-image-1.x、dall-e）映射不到时，按宽高比取最接近的固定尺寸，
+        # 不再退回 auto 丢掉用户设定的宽高比。openai_compatible 的未知模型仍保持 auto。
+        if capabilities.provider_type == "openai":
+            nearest = _nearest_fixed_size(ratio_key or "1:1", capabilities.size_options)
+            if nearest:
+                return nearest
     return _first_supported("auto", capabilities.size_options, "1024x1024")
 
 
@@ -282,6 +345,9 @@ def normalize_image_generation_options(
         capabilities.output_format_options,
         "png",
     )
+    if background == "transparent" and output_format == "jpeg":
+        # JPEG 没有透明通道，官方要求透明背景使用 png 或 webp；同时不再发送 jpeg 的压缩参数。
+        output_format = "png"
 
     compression_value = raw.get("output_compression")
     output_compression: int | None = None
@@ -340,12 +406,13 @@ def build_openai_image_request_params(
         payload["background"] = options.background
         payload["output_format"] = options.output_format
         if capabilities.supports_moderation:
-            if edit:
-                # The pinned OpenAI SDK lacks a named moderation argument on edit.
-                # extra_body preserves the API option without requiring an SDK upgrade.
-                payload["extra_body"] = {"moderation": options.moderation}
-            else:
+            if not edit:
                 payload["moderation"] = options.moderation
+            elif options.moderation != "auto":
+                # /v1/images/edits 接受 moderation（auto/low），但 openai SDK 的 images.edit()
+                # 没有这个具名参数，直接传会抛 TypeError，所以通过 extra_body 放进 multipart 表单。
+                # auto 是服务端默认值，不发送，减少对中转服务兼容性的依赖。
+                payload["extra_body"] = {"moderation": options.moderation}
     if options.output_compression is not None:
         payload["output_compression"] = options.output_compression
     if edit and capabilities.supports_input_fidelity and options.input_fidelity != "auto":

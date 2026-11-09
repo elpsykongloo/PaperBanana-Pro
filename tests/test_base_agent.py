@@ -143,6 +143,57 @@ class BaseAgentImageApiTest(unittest.TestCase):
             generation_utils.call_openai_image_generation_with_retry_async = original_openai
 
 
+class BaseAgentOpenAIImageConfigTest(unittest.TestCase):
+    def test_normalized_options_do_not_blank_out_responses_model(self):
+        from utils.image_generation_options import normalize_image_generation_options
+
+        for provider in ("openai", "openai_compatible"):
+            captured = {}
+
+            async def fake_call_openai_image_generation_with_retry_async(**kwargs):
+                captured.update(kwargs)
+                return ["fake-image-b64"]
+
+            original = generation_utils.call_openai_image_generation_with_retry_async
+            generation_utils.call_openai_image_generation_with_retry_async = (
+                fake_call_openai_image_generation_with_retry_async
+            )
+            try:
+                exp_config = types.SimpleNamespace(provider=provider, model_name="gpt-5.4-mini", temperature=1.0)
+                agent = _DummyAgent(model_name="gpt-image-2", system_prompt="", exp_config=exp_config)
+                # GUI/CLI 传入的是 to_dict() 后的完整选项，其中 responses_model 为空串
+                options = normalize_image_generation_options(
+                    provider_type=provider, model_name="gpt-image-2", aspect_ratio="16:9", image_resolution="2K"
+                ).to_dict()
+                self.assertEqual(options["responses_model"], "")
+                result = asyncio.run(
+                    agent.call_image_api(prompt="Draw a diagram.", image_generation_options=options)
+                )
+            finally:
+                generation_utils.call_openai_image_generation_with_retry_async = original
+
+            self.assertEqual(result, ["fake-image-b64"])
+            self.assertEqual(captured["provider_type"], provider)
+            self.assertEqual(captured["config"]["responses_model"], "gpt-5.4-mini")
+            self.assertEqual(captured["config"]["size"], "2048x1152")
+
+            # 显式指定的 responses_model 仍然优先
+            captured.clear()
+            generation_utils.call_openai_image_generation_with_retry_async = (
+                fake_call_openai_image_generation_with_retry_async
+            )
+            try:
+                asyncio.run(
+                    agent.call_image_api(
+                        prompt="Draw a diagram.",
+                        image_generation_options={**options, "responses_model": "gpt-5.5"},
+                    )
+                )
+            finally:
+                generation_utils.call_openai_image_generation_with_retry_async = original
+            self.assertEqual(captured["config"]["responses_model"], "gpt-5.5")
+
+
 class BaseAgentProviderValidationTest(unittest.TestCase):
     def test_text_api_routes_openai_compatible_to_openai_chat(self):
         captured = {}

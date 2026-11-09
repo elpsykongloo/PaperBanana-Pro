@@ -1264,6 +1264,8 @@ async def probe_image(connection: ProviderConnection) -> ProbeResult:
                     model_name=tested_model,
                     aspect_ratio="1:1",
                     image_resolution="1K",
+                    # 探针只验证连通性，用最低质量档节省费用；模型不支持 low 时由归一化回退
+                    raw_options={"quality": "low"},
                 ).to_dict()
                 probe_options["responses_model"] = connection.text_model
                 await generation_utils.call_openai_image_generation_with_retry_async(

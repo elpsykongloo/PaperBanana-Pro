@@ -1941,6 +1941,32 @@ def _job_type_from_context(error_context: str = "") -> str:
     return "refine" if str(error_context or "").startswith("refine-image") else "generation"
 
 
+def _get_field(payload: Any, key: str) -> Any:
+    if isinstance(payload, dict):
+        return payload.get(key)
+    return getattr(payload, key, None)
+
+
+def _stream_event_image_payloads(event: Any, event_type: str) -> list[Any]:
+    """返回某个流式事件里携带图像的对象。
+
+    Images API 的事件本身就带 b64_json；Responses API 的最终图不在
+    response.image_generation_call.completed 上，而在 response.output_item.done 的 item
+    或 response.completed 的 response.output 里。
+    """
+    if event_type == "response.output_item.done":
+        item = _get_field(event, "item")
+        return [item] if str(_get_field(item, "type") or "") == "image_generation_call" else []
+    if event_type == "response.completed":
+        response = _get_field(event, "response")
+        return [
+            output
+            for output in (_get_field(response, "output") or [])
+            if str(_get_field(output, "type") or "") == "image_generation_call"
+        ]
+    return [event]
+
+
 async def _extract_openai_stream_images(
     stream: Any,
     *,
@@ -1959,50 +1985,92 @@ async def _extract_openai_stream_images(
             or (event.get("type", "") if isinstance(event, dict) else "")
             or ""
         )
-        image_b64 = _extract_base64_field(event)
-        if image_b64 and image_b64.startswith(("http://", "https://")):
-            image_b64 = await _fetch_image_url_as_base64(image_b64)
-        if not image_b64:
-            image_url = _extract_url_field(event)
-            if image_url:
-                image_b64 = await _fetch_image_url_as_base64(image_url)
-        if not image_b64:
-            continue
-        if "partial" in event_type:
-            partial_images.append(image_b64)
-            _emit_runtime_event(
-                level="INFO",
-                kind="preview_ready",
-                source="GenerationUtils",
-                job_type=job_type,
+        for payload in _stream_event_image_payloads(event, event_type):
+            image_b64 = _extract_base64_field(payload)
+            if image_b64 and image_b64.startswith(("http://", "https://")):
+                image_b64 = await _fetch_image_url_as_base64(image_b64)
+            if not image_b64:
+                image_url = _extract_url_field(payload)
+                if image_url:
+                    image_b64 = await _fetch_image_url_as_base64(image_url)
+            if not image_b64:
+                continue
+            if "partial" not in event_type and image_b64 in final_images:
+                # Responses 的 output_item.done 与 response.completed 会携带同一张最终图
+                continue
+            _record_openai_stream_image(
+                image_b64,
+                is_partial="partial" in event_type,
+                final_images=final_images,
+                partial_images=partial_images,
                 candidate_id=candidate_id,
-                stage=f"{preview_label_prefix} partial image",
-                status="running",
                 provider=provider,
-                model=model_name,
-                preview_image=image_b64,
-                preview_mime_type="image/png",
-                preview_label=f"{preview_label_prefix} 流式预览 {len(partial_images)}",
-                message=f"{preview_label_prefix} 图像流式预览已更新（slot={candidate_id or 'active'}, partial={len(partial_images)}）",
-            )
-        else:
-            final_images.append(image_b64)
-            _emit_runtime_event(
-                level="INFO",
-                kind="preview_ready",
-                source="GenerationUtils",
+                model_name=model_name,
                 job_type=job_type,
-                candidate_id=candidate_id,
-                stage=f"{preview_label_prefix} final image",
-                status="running",
-                provider=provider,
-                model=model_name,
-                preview_image=image_b64,
-                preview_mime_type="image/png",
-                preview_label=f"{preview_label_prefix} 最终图像",
-                message=f"{preview_label_prefix} 图像流式最终图已到达（slot={candidate_id or 'active'}）",
+                preview_label_prefix=preview_label_prefix,
             )
     return final_images or partial_images
+
+
+def _record_openai_stream_image(
+    image_b64: str,
+    *,
+    is_partial: bool,
+    final_images: List[str],
+    partial_images: List[str],
+    candidate_id: str,
+    provider: str,
+    model_name: str,
+    job_type: str,
+    preview_label_prefix: str,
+) -> None:
+    if is_partial:
+        partial_images.append(image_b64)
+        _emit_runtime_event(
+            level="INFO",
+            kind="preview_ready",
+            source="GenerationUtils",
+            job_type=job_type,
+            candidate_id=candidate_id,
+            stage=f"{preview_label_prefix} partial image",
+            status="running",
+            provider=provider,
+            model=model_name,
+            preview_image=image_b64,
+            preview_mime_type="image/png",
+            preview_label=f"{preview_label_prefix} 流式预览 {len(partial_images)}",
+            message=f"{preview_label_prefix} 图像流式预览已更新（slot={candidate_id or 'active'}, partial={len(partial_images)}）",
+        )
+        return
+    final_images.append(image_b64)
+    _emit_runtime_event(
+        level="INFO",
+        kind="preview_ready",
+        source="GenerationUtils",
+        job_type=job_type,
+        candidate_id=candidate_id,
+        stage=f"{preview_label_prefix} final image",
+        status="running",
+        provider=provider,
+        model=model_name,
+        preview_image=image_b64,
+        preview_mime_type="image/png",
+        preview_label=f"{preview_label_prefix} 最终图像",
+        message=f"{preview_label_prefix} 图像流式最终图已到达（slot={candidate_id or 'active'}）",
+    )
+
+
+# 需要用户修改请求才能成功的错误（审核拦截、参数取值非法等）：重试或换 Responses 兜底都只会重复失败并多计费。
+_OPENAI_IMAGE_USER_ERROR_CODES = frozenset(
+    {"moderation_blocked", "content_policy_violation", "invalid_value", "invalid_prompt"}
+)
+_OPENAI_IMAGE_USER_ERROR_TYPES = frozenset({"image_generation_user_error"})
+
+
+def _is_openai_image_user_error(exc: Exception) -> bool:
+    err_code = str(getattr(exc, "code", "") or "").strip().lower()
+    err_type = str(getattr(exc, "type", "") or "").strip().lower()
+    return err_code in _OPENAI_IMAGE_USER_ERROR_CODES or err_type in _OPENAI_IMAGE_USER_ERROR_TYPES
 
 
 def _is_openai_image_retryable_error(exc: Exception) -> bool:
@@ -2021,6 +2089,9 @@ def _is_openai_image_retryable_error(exc: Exception) -> bool:
         APIConnectionError = APIStatusError = APITimeoutError = AuthenticationError = BadRequestError = NotFoundError = PermissionDeniedError = RateLimitError = tuple()  # type: ignore
 
     message = str(exc or "").lower()
+    if _is_openai_image_user_error(exc):
+        # 流式请求中途的 SSE error 事件会被 SDK 包成没有 status_code 的 APIError，只能靠 code/type 判断
+        return False
     if AuthenticationError and isinstance(exc, AuthenticationError):
         return False
     if BadRequestError and isinstance(exc, BadRequestError):
@@ -2049,6 +2120,8 @@ def _is_openai_image_retryable_error(exc: Exception) -> bool:
         return False
     if status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
         return True
+    if not status_code and str(getattr(exc, "type", "") or "").strip().lower() == "invalid_request_error":
+        return False
     if any(token in message for token in ("invalid_request", "model_not_found", "not found", "unsupported parameter")):
         return False
     if any(token in message for token in ("timeout", "timed out", "connection", "rate limit", "too many requests", "server error", "temporarily unavailable")):
@@ -2073,6 +2146,9 @@ def _should_try_openai_responses_fallback(
         return False
     if str(fallback_mode or "").lower() == "always":
         return True
+    if _is_openai_image_user_error(exc):
+        # 审核拦截或参数取值非法在 Responses 图像工具里同样会失败，还会额外计费主模型 token
+        return False
     message = str(exc or "").lower()
     status_code = 0
     try:
@@ -2486,6 +2562,8 @@ async def call_openai_image_generation_with_retry_async(
                         message="OpenAI Images API 失败，改用 Responses 图像工具兜底",
                         details=f"{context_msg}: {_safe_text_for_log(e)}",
                     )
+                    if _runtime_cancel_requested():
+                        raise asyncio.CancelledError()
                     response_images = await _call_openai_responses_image_generation_async(
                         client=client,
                         model_name=model_name,

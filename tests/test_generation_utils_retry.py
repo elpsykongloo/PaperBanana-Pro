@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -165,6 +166,74 @@ class GeminiModelNotFoundTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, ["Error"])
         self.assertEqual(models.calls, ladder)
+
+
+class _FakeAsyncStream:
+    def __init__(self, events):
+        self._events = iter(events)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._events)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+def _responses_stream_events(*, with_partial: bool):
+    """按 openai SDK 的真实事件结构构造 Responses 图像工具流：最终图不在 completed 事件上。"""
+    from openai.types.responses import (
+        ResponseImageGenCallCompletedEvent,
+        ResponseImageGenCallPartialImageEvent,
+        ResponseOutputItemDoneEvent,
+    )
+
+    events = []
+    if with_partial:
+        events.append(
+            ResponseImageGenCallPartialImageEvent(
+                type="response.image_generation_call.partial_image",
+                item_id="ig_1",
+                output_index=0,
+                sequence_number=1,
+                partial_image_index=0,
+                partial_image_b64="responses-partial-b64",
+            )
+        )
+    events.append(
+        ResponseImageGenCallCompletedEvent(
+            type="response.image_generation_call.completed",
+            item_id="ig_1",
+            output_index=0,
+            sequence_number=2,
+        )
+    )
+    events.append(
+        ResponseOutputItemDoneEvent.model_validate(
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "sequence_number": 3,
+                "item": {
+                    "type": "image_generation_call",
+                    "id": "ig_1",
+                    "status": "completed",
+                    "result": "responses-final-b64",
+                },
+            }
+        )
+    )
+    events.append(
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                output=[SimpleNamespace(type="image_generation_call", result="responses-final-b64")]
+            ),
+        )
+    )
+    return events
 
 
 class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
@@ -478,7 +547,8 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent["image"]), 1)
         self.assertNotIn("input_fidelity", sent)
 
-    async def test_image_edit_moderation_works_with_installed_sdk(self):
+    async def _call_image_api_with_real_sdk(self, *, model_name="gpt-image-2", config, contents=None):
+        # 用真实 SDK + MockTransport：请求参数必须能通过已安装 SDK 的方法签名（AsyncMock 测不出这一点）。
         import httpx
         from openai import AsyncOpenAI
 
@@ -486,9 +556,7 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
 
         async def handle(request):
             requests.append(request)
-            return httpx.Response(200, json={
-                "created": 0, "data": [{"b64_json": "edited-image-b64"}]
-            })
+            return httpx.Response(200, json={"created": 0, "data": [{"b64_json": "image-b64"}]})
 
         async with AsyncOpenAI(
             api_key="test-only", base_url="https://example.invalid/v1",
@@ -496,17 +564,149 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
         ) as client:
             with patch.object(generation_utils, "get_openai_client", return_value=client):
                 result = await generation_utils.call_openai_image_generation_with_retry_async(
-                    model_name="gpt-image-2", prompt="polish this image",
-                    config={"moderation": "auto", "responses_fallback": "never"},
-                    contents=[{"type": "image", "source": {
-                        "type": "base64", "media_type": "image/png",
-                        "data": "ZmFrZS1pbWFnZQ==",
-                    }}], max_attempts=1, retry_delay=0,
+                    model_name=model_name, prompt="polish this image",
+                    config={"responses_fallback": "never", **config},
+                    contents=contents, max_attempts=1, retry_delay=0,
                 )
-        self.assertEqual(result, ["edited-image-b64"])
+        return result, requests
+
+    _REFERENCE_IMAGE = [{"type": "image", "source": {
+        "type": "base64", "media_type": "image/png", "data": "ZmFrZS1pbWFnZQ==",
+    }}]
+
+    async def test_image_edit_moderation_works_with_installed_sdk(self):
+        result, requests = await self._call_image_api_with_real_sdk(
+            config={"moderation": "low"}, contents=self._REFERENCE_IMAGE,
+        )
+        self.assertEqual(result, ["image-b64"])
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0].url.path, "/v1/images/edits")
-        self.assertIn(b'name="moderation"\r\n\r\nauto', requests[0].content)
+        self.assertIn(b'name="moderation"\r\n\r\nlow', requests[0].content)
+
+    async def test_image_edit_omits_default_moderation(self):
+        result, requests = await self._call_image_api_with_real_sdk(
+            config={"moderation": "auto"}, contents=self._REFERENCE_IMAGE,
+        )
+        self.assertEqual(result, ["image-b64"])
+        self.assertEqual(requests[0].url.path, "/v1/images/edits")
+        self.assertNotIn(b'name="moderation"', requests[0].content)
+
+    async def test_image_generate_keeps_moderation_with_installed_sdk(self):
+        result, requests = await self._call_image_api_with_real_sdk(config={"moderation": "low"})
+        self.assertEqual(result, ["image-b64"])
+        self.assertEqual(requests[0].url.path, "/v1/images/generations")
+        self.assertEqual(json.loads(requests[0].content)["moderation"], "low")
+
+    async def test_gpt_image_1_mini_edit_never_sends_input_fidelity(self):
+        result, requests = await self._call_image_api_with_real_sdk(
+            model_name="gpt-image-1-mini",
+            config={"input_fidelity": "high"},
+            contents=self._REFERENCE_IMAGE,
+        )
+        self.assertEqual(result, ["image-b64"])
+        self.assertNotIn(b'name="input_fidelity"', requests[0].content)
+        self.assertFalse(get_image_model_capabilities("openai", "gpt-image-1-mini").supports_input_fidelity)
+        self.assertTrue(get_image_model_capabilities("openai", "gpt-image-1.5").supports_input_fidelity)
+
+    def test_transparent_background_forces_png_instead_of_jpeg(self):
+        options = normalize_image_generation_options(
+            provider_type="openai",
+            model_name="gpt-image-1.5",
+            raw_options={"background": "transparent", "output_format": "jpeg", "output_compression": 80},
+        )
+        self.assertEqual(options.background, "transparent")
+        self.assertEqual(options.output_format, "png")
+        self.assertIsNone(options.output_compression)
+
+    def test_fixed_size_models_keep_aspect_ratio_instead_of_auto(self):
+        cases = {
+            ("16:9", "2K"): "1536x1024",
+            ("9:16", "2K"): "1024x1536",
+            ("1:1", "2K"): "1024x1024",
+            ("4:3", "1K"): "1536x1024",
+            ("21:9", "1K"): "1536x1024",
+        }
+        for model_name in ("gpt-image-1.5", "gpt-image-1-mini", "chatgpt-image-latest"):
+            for (aspect_ratio, resolution), expected in cases.items():
+                options = normalize_image_generation_options(
+                    provider_type="openai",
+                    model_name=model_name,
+                    aspect_ratio=aspect_ratio,
+                    image_resolution=resolution,
+                )
+                self.assertEqual(options.size, expected, (model_name, aspect_ratio, resolution))
+        # 显式 auto 仍然保留；未知的 openai_compatible 模型不猜固定尺寸
+        self.assertEqual(
+            normalize_image_generation_options(provider_type="openai", model_name="gpt-image-1.5", image_resolution="auto").size,
+            "auto",
+        )
+        self.assertEqual(
+            normalize_image_generation_options(
+                provider_type="openai_compatible", model_name="some-proxy-model", aspect_ratio="16:9", image_resolution="2K"
+            ).size,
+            "auto",
+        )
+
+    def test_gpt_image_2_uses_exact_aspect_ratio_sizes(self):
+        cases = {
+            ("16:9", "1K"): "1536x864",
+            ("9:16", "1K"): "864x1536",
+            ("21:9", "1K"): "1680x720",
+            ("21:9", "2K"): "2352x1008",
+            ("21:9", "4K"): "3360x1440",
+            ("16:9", "2K"): "2048x1152",
+        }
+        capabilities = get_image_model_capabilities("openai", "gpt-image-2")
+        for (aspect_ratio, resolution), expected in cases.items():
+            options = normalize_image_generation_options(
+                provider_type="openai", model_name="gpt-image-2", aspect_ratio=aspect_ratio, image_resolution=resolution
+            )
+            self.assertEqual(options.size, expected, (aspect_ratio, resolution))
+            self.assertTrue(is_valid_custom_image_size(expected, capabilities), expected)
+        # gpt-image-1 系列仍使用固定尺寸表
+        self.assertEqual(
+            normalize_image_generation_options(
+                provider_type="openai", model_name="gpt-image-1.5", aspect_ratio="16:9", image_resolution="1K"
+            ).size,
+            "1536x1024",
+        )
+
+    def test_user_errors_are_not_retried_or_sent_to_responses_fallback(self):
+        from openai import APIError
+
+        request = SimpleNamespace(method="POST", url="https://example.invalid/v1/images/edits")
+        # 流式请求中途的 SSE error 事件：SDK 抛出的 APIError 没有 status_code
+        stream_error = APIError(
+            "Your request was rejected by the safety system.",
+            request=request,
+            body={"type": "image_generation_user_error", "code": "moderation_blocked"},
+        )
+        self.assertFalse(generation_utils._is_openai_image_retryable_error(stream_error))
+
+        class _ModerationBlocked(RuntimeError):
+            status_code = 400
+            code = "moderation_blocked"
+            type = "image_generation_user_error"
+
+        self.assertFalse(
+            generation_utils._should_try_openai_responses_fallback(
+                _ModerationBlocked("blocked"), provider_type="openai", model_name="gpt-image-2", fallback_mode="auto"
+            )
+        )
+
+        class _UnsupportedParameter(RuntimeError):
+            status_code = 400
+            code = "unknown_parameter"
+
+        # 非用户错误的 400（如参数不被 Images API 支持）仍保留兜底
+        self.assertTrue(
+            generation_utils._should_try_openai_responses_fallback(
+                _UnsupportedParameter("unsupported parameter"),
+                provider_type="openai",
+                model_name="gpt-image-2",
+                fallback_mode="auto",
+            )
+        )
 
     async def test_openai_image_generation_does_not_retry_non_recoverable_errors(self):
         class _BadRequest(RuntimeError):
@@ -695,34 +895,12 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
         class _BadGateway(RuntimeError):
             status_code = 502
 
-        class _FakeStream:
-            def __aiter__(self):
-                self._events = iter(
-                    [
-                        SimpleNamespace(
-                            type="response.image_generation_call.partial_image",
-                            partial_image_b64="responses-partial-b64",
-                        ),
-                        SimpleNamespace(
-                            type="response.image_generation_call.completed",
-                            result="responses-final-b64",
-                        ),
-                    ]
-                )
-                return self
-
-            async def __anext__(self):
-                try:
-                    return next(self._events)
-                except StopIteration:
-                    raise StopAsyncIteration
-
         fake_client = SimpleNamespace(
             images=SimpleNamespace(
                 generate=AsyncMock(side_effect=_BadGateway("upstream request failed")),
             ),
             responses=SimpleNamespace(
-                create=AsyncMock(return_value=_FakeStream()),
+                create=AsyncMock(return_value=_FakeAsyncStream(_responses_stream_events(with_partial=True))),
             ),
         )
         captured_events = []
@@ -753,8 +931,16 @@ class OpenAIRetryFailureTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent["stream"])
         self.assertEqual(sent["tools"][0]["partial_images"], 1)
         preview_events = [event for event in captured_events if event.get("kind") == "preview_ready"]
+        # output_item.done 与 response.completed 携带同一张最终图，只记一次
         self.assertEqual([event["preview_image"] for event in preview_events], ["responses-partial-b64", "responses-final-b64"])
         self.assertEqual(preview_events[0]["candidate_id"], "9")
+
+    async def test_openai_responses_stream_without_partials_returns_final_image(self):
+        result = await generation_utils._extract_openai_stream_images(
+            _FakeAsyncStream(_responses_stream_events(with_partial=False)),
+            preview_label_prefix="OpenAI Responses",
+        )
+        self.assertEqual(result, ["responses-final-b64"])
 
     def test_safe_log_text_redacts_openai_keys_and_bearer_tokens(self):
         text = generation_utils._safe_text_for_log(

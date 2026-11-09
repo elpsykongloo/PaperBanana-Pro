@@ -1292,18 +1292,32 @@ def render_image_generation_option_controls(
     )
     size_choices = list(capabilities.size_options)
     default_size = default_options.size
+    size_key = f"{widget_prefix}_image_size"
+    size_signature_key = f"{widget_prefix}_image_size_signature"
     custom_size_key = f"{widget_prefix}_image_custom_size"
     use_custom_size = capabilities.supports_custom_size and default_size not in size_choices
     if capabilities.supports_custom_size:
         size_choices.append("自定义像素尺寸")
-        if custom_size_key not in st.session_state:
+
+    # selectbox 带 key 时 index 只在首次渲染生效；宽高比、分辨率或模型变化后需要主动把尺寸
+    # 重置为对应的默认值，否则 OpenAI 会一直用第一次渲染时的尺寸。输入不变时保留用户手选的尺寸。
+    size_signature = (provider_type, image_model_name, aspect_ratio, image_resolution)
+    if (
+        st.session_state.get(size_signature_key) != size_signature
+        or st.session_state.get(size_key) not in size_choices
+    ):
+        st.session_state[size_key] = "自定义像素尺寸" if use_custom_size else default_size
+        if capabilities.supports_custom_size:
             st.session_state[custom_size_key] = default_size if default_size != "auto" else "2048x2048"
+        st.session_state[size_signature_key] = size_signature
+    elif capabilities.supports_custom_size and custom_size_key not in st.session_state:
+        # 自定义尺寸输入框隐藏一轮后 Streamlit 会删除它的状态；切回自定义时补回默认值，避免空值退回 auto
+        st.session_state[custom_size_key] = default_size if default_size != "auto" else "2048x2048"
 
     selected_size_label = st.selectbox(
         "OpenAI 输出尺寸",
         size_choices,
-        index=size_choices.index("自定义像素尺寸") if use_custom_size else size_choices.index(default_size),
-        key=f"{widget_prefix}_image_size",
+        key=size_key,
         help="GPT Image 2 可使用 auto、常用尺寸或满足约束的自定义像素尺寸。",
     )
     size = selected_size_label
@@ -1337,6 +1351,9 @@ def render_image_generation_option_controls(
         index=list(capabilities.output_format_options).index(default_options.output_format),
         key=f"{widget_prefix}_image_output_format",
     )
+    if background == "transparent" and output_format == "jpeg":
+        st.caption("JPEG 不支持透明背景，本次将按 PNG 输出。")
+        output_format = "png"
     output_compression = None
     if capabilities.supports_output_compression and output_format in {"jpeg", "webp"}:
         output_compression = int(
@@ -4688,9 +4705,12 @@ async def refine_image_with_nanoviz(
                             "aspect_ratio": aspect_ratio,
                             "image_resolution": image_size,
                             "output_format": "png",
-                            "responses_model": getattr(runtime_settings, "model_name", ""),
                             **dict(image_generation_options or {}),
                         }
+                        # 归一化参数里的 responses_model 默认为空串，不能覆盖文本模型
+                        openai_refine_options["responses_model"] = str(
+                            openai_refine_options.get("responses_model") or ""
+                        ).strip() or str(getattr(runtime_settings, "model_name", "") or "")
                         response_list = await asyncio.wait_for(
                             generation_utils.call_openai_image_generation_with_retry_async(
                                 model_name=runtime_settings.image_model_name,
